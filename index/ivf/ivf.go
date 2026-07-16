@@ -150,6 +150,9 @@ func (idx *IVFIndex) Search(query []float32, topK int) []flat.SearchResult {
 	if nprobe > idx.nList {
 		nprobe = idx.nList
 	}
+	if nprobe > len(idx.centroids) {
+		nprobe = len(idx.centroids)
+	}
 
 	centroidDists := make([]struct {
 		idx  int
@@ -235,6 +238,9 @@ func (idx *IVFIndex) SearchWithFilter(query []float32, topK int,
 	}
 	if nprobe > idx.nList {
 		nprobe = idx.nList
+	}
+	if nprobe > len(idx.centroids) {
+		nprobe = len(idx.centroids)
 	}
 
 	type centroidDist struct {

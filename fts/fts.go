@@ -79,6 +79,21 @@ func NewInvertedIndex() *InvertedIndex {
 }
 
 func (idx *InvertedIndex) AddDocument(docID uint64, tokens []string) {
+	exists := false
+	for _, postings := range idx.dict {
+		for _, p := range postings {
+			if p.DocID == docID {
+				exists = true
+				break
+			}
+		}
+		if exists {
+			break
+		}
+	}
+	if exists {
+		idx.RemoveDocument(docID)
+	}
 	idx.totalDocs++
 	positions := make(map[string][]int)
 	for pos, token := range tokens {

@@ -126,7 +126,10 @@ func (idx *HNSWRabitqIndex) Add(vector []float32, pk string) uint64 {
 
 	currObj := uint64(idx.enterPoint)
 	for lc := idx.maxLevel; lc > level; lc-- {
-		currObj = idx.searchLayer(v, currObj, 1.0, lc)[0].id
+		result := idx.searchLayer(v, currObj, 1.0, lc)
+		if len(result) > 0 {
+			currObj = result[0].id
+		}
 	}
 
 	for lc := min(level, idx.maxLevel); lc >= 0; lc-- {
@@ -171,7 +174,10 @@ func (idx *HNSWRabitqIndex) searchLocked(query []float32, topK int) []flat.Searc
 
 	currObj := uint64(idx.enterPoint)
 	for lc := idx.maxLevel; lc > 0; lc-- {
-		currObj = idx.searchLayer(q, currObj, 1.0, lc)[0].id
+		result := idx.searchLayer(q, currObj, 1.0, lc)
+		if len(result) > 0 {
+			currObj = result[0].id
+		}
 	}
 
 	candidates := idx.searchLayer(q, currObj, float64(idx.ef), 0)

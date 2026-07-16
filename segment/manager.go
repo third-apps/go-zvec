@@ -47,17 +47,19 @@ func (m *Manager) Insert(d *doc.Doc) {
 }
 
 func (m *Manager) Upsert(d *doc.Doc) bool {
-	m.mu.RLock()
-	segs := m.segments
-	for _, seg := range segs {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, seg := range m.segments {
 		if seg.HasDoc(d.ID) {
-			m.mu.RUnlock()
-			return seg.Update(d)
+			seg.Update(d)
+			return true
 		}
 	}
-	m.mu.RUnlock()
-
-	m.Insert(d)
+	active := m.segments[len(m.segments)-1]
+	if active.IsFull() {
+		active = m.rotate()
+	}
+	active.Insert(d)
 	return true
 }
 

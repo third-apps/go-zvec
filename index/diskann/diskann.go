@@ -187,7 +187,19 @@ func (idx *DiskAnnIndex) putVector(docID uint64, vec []float32) {
 			buf[j*4+2] = byte(bits >> 16)
 			buf[j*4+3] = byte(bits >> 24)
 		}
-		idx.vectorStore.Write(int64(docID)*int64(idx.dimension*4), buf)
+		if err := idx.vectorStore.Write(int64(docID)*int64(idx.dimension*4), buf); err != nil {
+			if _, ok := idx.vectorStore.(*storage.MMAPStorage); ok {
+				fileStore, err2 := storage.OpenFileStorage(
+					filepath.Join(idx.path, "vectors.bin"),
+					storage.StorageOptions{},
+				)
+				if err2 == nil {
+					idx.vectorStore.Close()
+					idx.vectorStore = fileStore
+					idx.vectorStore.Write(int64(docID)*int64(idx.dimension*4), buf)
+				}
+			}
+		}
 	}
 }
 
@@ -423,6 +435,11 @@ func (idx *DiskAnnIndex) pruneAndAdd(newID uint64, newVec []float32) {
 }
 
 func (idx *DiskAnnIndex) addUndirectedEdge(a, b uint64) {
+	for _, nb := range idx.adjList[a] {
+		if nb == b {
+			return
+		}
+	}
 	idx.adjList[a] = append(idx.adjList[a], b)
 	idx.adjList[b] = append(idx.adjList[b], a)
 }

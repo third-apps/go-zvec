@@ -262,26 +262,29 @@ func (c *Collection) replayEntry(entry wal.LogEntry) {
 		if c.segManager != nil {
 			if existing := c.segManager.GetDoc(entry.Doc.ID); existing != nil {
 				entry.Doc.DocID = existing.DocID
+				c.deleteFromIndexes(existing.ID)
+				c.deleteFromFTSIndexes(existing.ID)
+				c.deleteFromInvertIndexes(existing.ID)
 				c.segManager.Upsert(entry.Doc)
+				c.addToIndexes(entry.Doc)
+				c.addToFTSIndexes(entry.Doc)
+				c.addToInvertIndexes(entry.Doc)
 			} else {
 				c.segManager.Insert(entry.Doc)
+				c.addToIndexes(entry.Doc)
+				c.addToFTSIndexes(entry.Doc)
+				c.addToInvertIndexes(entry.Doc)
 			}
 		} else {
 			if existingIdx, exists := c.docIndex[entry.Doc.ID]; exists {
-				for _, field := range c.schema.VectorFields() {
-					if idx, ok := c.indexes[field.Name]; ok {
-						idx.Delete(c.docs[existingIdx].ID)
-					}
-				}
+				c.deleteFromIndexes(c.docs[existingIdx].ID)
+				c.deleteFromFTSIndexes(c.docs[existingIdx].ID)
+				c.deleteFromInvertIndexes(c.docs[existingIdx].ID)
 				entry.Doc.DocID = c.docs[existingIdx].DocID
 				c.docs[existingIdx] = entry.Doc
-				for _, field := range c.schema.VectorFields() {
-					if idx, ok := c.indexes[field.Name]; ok {
-						if v, ok2 := entry.Doc.Vector(field.Name); ok2 && v.Float32s != nil {
-							idx.Add(v.Float32s, entry.Doc.ID)
-						}
-					}
-				}
+				c.addToIndexes(entry.Doc)
+				c.addToFTSIndexes(entry.Doc)
+				c.addToInvertIndexes(entry.Doc)
 			} else {
 				c.docs = append(c.docs, entry.Doc)
 				c.docIndex[entry.Doc.ID] = len(c.docs) - 1
@@ -289,13 +292,9 @@ func (c *Collection) replayEntry(entry wal.LogEntry) {
 				if entry.Doc.DocID >= c.nextDocID {
 					c.nextDocID = entry.Doc.DocID + 1
 				}
-				for _, field := range c.schema.VectorFields() {
-					if idx, ok := c.indexes[field.Name]; ok {
-						if v, ok2 := entry.Doc.Vector(field.Name); ok2 && v.Float32s != nil {
-							idx.Add(v.Float32s, entry.Doc.ID)
-						}
-					}
-				}
+				c.addToIndexes(entry.Doc)
+				c.addToFTSIndexes(entry.Doc)
+				c.addToInvertIndexes(entry.Doc)
 			}
 		}
 	case wal.OpUpdate:
@@ -305,46 +304,37 @@ func (c *Collection) replayEntry(entry wal.LogEntry) {
 		if c.segManager != nil {
 			if existing := c.segManager.GetDoc(entry.Doc.ID); existing != nil {
 				entry.Doc.DocID = existing.DocID
+				c.deleteFromIndexes(existing.ID)
+				c.deleteFromFTSIndexes(existing.ID)
+				c.deleteFromInvertIndexes(existing.ID)
 				c.segManager.Upsert(entry.Doc)
+				c.addToIndexes(entry.Doc)
+				c.addToFTSIndexes(entry.Doc)
+				c.addToInvertIndexes(entry.Doc)
 			}
 		} else {
 			existingIdx, exists := c.docIndex[entry.Doc.ID]
 			if !exists {
 				return
 			}
-			for _, field := range c.schema.VectorFields() {
-				if idx, ok := c.indexes[field.Name]; ok {
-					idx.Delete(c.docs[existingIdx].ID)
-				}
-			}
+			c.deleteFromIndexes(c.docs[existingIdx].ID)
+			c.deleteFromFTSIndexes(c.docs[existingIdx].ID)
+			c.deleteFromInvertIndexes(c.docs[existingIdx].ID)
 			entry.Doc.DocID = c.docs[existingIdx].DocID
 			c.docs[existingIdx] = entry.Doc
-			for _, field := range c.schema.VectorFields() {
-				if idx, ok := c.indexes[field.Name]; ok {
-					if v, ok2 := entry.Doc.Vector(field.Name); ok2 && v.Float32s != nil {
-						idx.Add(v.Float32s, entry.Doc.ID)
-					}
-				}
-			}
-			for _, field := range c.schema.FTSFields() {
-				if ftsIdx, ok := c.ftsIndexes[field.Name]; ok {
-					if fv, ok2 := entry.Doc.Field(field.Name); ok2 && !fv.Null {
-						ftsIdx.Index(entry.Doc.DocID, fv.StringVal)
-					}
-				}
-			}
+			c.addToIndexes(entry.Doc)
+			c.addToFTSIndexes(entry.Doc)
+			c.addToInvertIndexes(entry.Doc)
 		}
 	case wal.OpDelete:
 		for _, id := range entry.IDs {
+			c.deleteFromIndexes(id)
+			c.deleteFromFTSIndexes(id)
+			c.deleteFromInvertIndexes(id)
 			if c.segManager != nil {
 				c.segManager.Delete(id)
 			} else {
 				if idx, exists := c.docIndex[id]; exists {
-					for _, field := range c.schema.VectorFields() {
-						if idx2, ok := c.indexes[field.Name]; ok {
-							idx2.Delete(id)
-						}
-					}
 					removed := c.docs[idx]
 					delete(c.docIDToPK, removed.DocID)
 					c.docs = append(c.docs[:idx], c.docs[idx+1:]...)
@@ -367,8 +357,14 @@ func (c *Collection) Close() error {
 		idx.Close()
 	}
 	c.indexes = nil
+	c.docs = nil
+	c.docIndex = nil
+	c.docIDToPK = nil
+	c.ftsIndexes = nil
+	c.invertIndexes = nil
 	if c.segManager != nil {
 		c.segManager.Close()
+		c.segManager = nil
 	}
 	if c.wal != nil {
 		return c.wal.Close()
@@ -397,6 +393,9 @@ func (c *Collection) Destroy() error {
 	c.docs = nil
 	c.docIndex = nil
 	c.indexes = nil
+	c.ftsIndexes = nil
+	c.invertIndexes = nil
+	c.docIDToPK = nil
 	if c.segManager != nil {
 		c.segManager.Close()
 		c.segManager = nil
@@ -433,6 +432,9 @@ func (c *Collection) Insert(docs []*doc.Doc) status.Status {
 		if c.pkExists(d.ID) {
 			return status.NewInvalidArgument(fmt.Sprintf("doc '%s' already exists, use Upsert instead", d.ID))
 		}
+	}
+
+	for _, d := range docs {
 
 		docID := c.nextDocID
 		c.nextDocID++
@@ -475,6 +477,7 @@ func (c *Collection) Upsert(docs []*doc.Doc) status.Status {
 			existing := c.segManager.GetDoc(d.ID)
 			if existing != nil {
 				c.deleteFromIndexes(existing.ID)
+				c.deleteFromFTSIndexes(existing.ID)
 				c.deleteFromInvertIndexes(existing.ID)
 				d.DocID = existing.DocID
 				c.segManager.Upsert(d)
@@ -487,6 +490,7 @@ func (c *Collection) Upsert(docs []*doc.Doc) status.Status {
 		} else if existingIdx, exists := c.docIndex[d.ID]; exists {
 			existing := c.docs[existingIdx]
 			c.deleteFromIndexes(existing.ID)
+			c.deleteFromFTSIndexes(existing.ID)
 			c.deleteFromInvertIndexes(existing.ID)
 			d.DocID = existing.DocID
 			c.docs[existingIdx] = d
@@ -556,6 +560,7 @@ func (c *Collection) Update(docs []*doc.Doc) status.Status {
 		}
 
 		c.deleteFromIndexes(existing.ID)
+		c.deleteFromFTSIndexes(existing.ID)
 		c.deleteFromInvertIndexes(existing.ID)
 		c.addToIndexes(d)
 		c.addToFTSIndexes(d)
@@ -1078,6 +1083,9 @@ func (c *Collection) CreateIndex(fieldName string, params *param.IndexParams) st
 func (c *Collection) DropIndex(fieldName string) status.Status {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if idx, ok := c.indexes[fieldName]; ok {
+		idx.Close()
+	}
 	delete(c.indexes, fieldName)
 	delete(c.invertIndexes, fieldName)
 	delete(c.ftsIndexes, fieldName)
@@ -1092,6 +1100,9 @@ func (c *Collection) Optimize(opts *OptimizeOptions) status.Status {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	for _, idx := range c.indexes {
+		idx.Close()
+	}
 	c.indexes = make(map[string]Index)
 	for _, field := range c.schema.VectorFields() {
 		idx, err := createIndex(field)
@@ -1469,14 +1480,16 @@ func compileFilter(filter string) func(*doc.Doc) bool {
 }
 
 func wildcardMatch(s, pattern string) bool {
+	sRunes := []rune(s)
+	pRunes := []rune(pattern)
 	si, pi := 0, 0
 	starIdx := -1
 	matchIdx := 0
-	for si < len(s) {
-		if pi < len(pattern) && (pattern[pi] == '?' || pattern[pi] == s[si]) {
+	for si < len(sRunes) {
+		if pi < len(pRunes) && (pRunes[pi] == '?' || pRunes[pi] == sRunes[si]) {
 			si++
 			pi++
-		} else if pi < len(pattern) && pattern[pi] == '*' {
+		} else if pi < len(pRunes) && pRunes[pi] == '*' {
 			starIdx = pi
 			matchIdx = si
 			pi++
@@ -1488,10 +1501,10 @@ func wildcardMatch(s, pattern string) bool {
 			return false
 		}
 	}
-	for pi < len(pattern) && pattern[pi] == '*' {
+	for pi < len(pRunes) && pRunes[pi] == '*' {
 		pi++
 	}
-	return pi == len(pattern)
+	return pi == len(pRunes)
 }
 
 func extractValue(v doc.Value) interface{} {

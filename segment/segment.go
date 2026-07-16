@@ -65,6 +65,8 @@ func (s *Segment) Delete(pk string) bool {
 	if !exists {
 		return false
 	}
+	removed := s.docs[idx]
+	delete(s.docIDToPK, removed.DocID)
 	s.docs = append(s.docs[:idx], s.docs[idx+1:]...)
 	delete(s.docIndex, pk)
 	for pk2, pos := range s.docIndex {

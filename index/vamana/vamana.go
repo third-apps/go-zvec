@@ -169,6 +169,15 @@ func (idx *VamanaIndex) Delete(pk string) bool {
 					}
 				}
 			}
+			if idx.entryPoint == i {
+				if len(idx.docs) > 0 {
+					idx.entryPoint = 0
+				} else {
+					idx.entryPoint = -1
+				}
+			} else if idx.entryPoint > i {
+				idx.entryPoint--
+			}
 			return true
 		}
 	}
