@@ -1,0 +1,10 @@
+.merkle-snapshot.json
+# 示例运行时产生的数据目录
+demo_*/
+examples/*_data/
+search_demo_data/
+.idea/
+.codeartsdoer/
+.arts/
+# Go 编译产物
+*.exe

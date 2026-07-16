@@ -1,0 +1,8 @@
+{"op":"INSERT","id":"user_1","doc":{"ID":"user_1","Score":0,"DocID":0}}
+{"op":"INSERT","id":"user_2","doc":{"ID":"user_2","Score":0,"DocID":1}}
+{"op":"INSERT","id":"user_3","doc":{"ID":"user_3","Score":0,"DocID":2}}
+{"op":"INSERT","id":"user_4","doc":{"ID":"user_4","Score":0,"DocID":3}}
+{"op":"UPDATE","id":"user_1","doc":{"ID":"user_1","Score":0,"DocID":0}}
+{"op":"UPSERT","id":"user_2","doc":{"ID":"user_2","Score":0,"DocID":1}}
+{"op":"UPSERT","id":"user_5","doc":{"ID":"user_5","Score":0,"DocID":4}}
+{"op":"DELETE","ids":["user_3"]}
