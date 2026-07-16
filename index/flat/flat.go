@@ -169,3 +169,7 @@ func (idx *FlatIndex) GetDocID(pk string) (uint64, bool) {
 	}
 	return 0, false
 }
+
+func (idx *FlatIndex) Close() error {
+	return nil
+}

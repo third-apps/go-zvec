@@ -58,6 +58,7 @@ type Index interface {
 	Add(vector []float32, pk string) uint64
 	Delete(pk string) bool
 	Size() int
+	Close() error
 }
 
 func CreateAndOpen(path string, s *schema.CollectionSchema, opts *Options) (*Collection, error) {
@@ -66,6 +67,10 @@ func CreateAndOpen(path string, s *schema.CollectionSchema, opts *Options) (*Col
 	}
 	if s == nil {
 		return nil, errors.New("schema cannot be nil")
+	}
+
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	actualOpts := Options{}
@@ -228,10 +233,11 @@ func (c *Collection) replayEntry(entry wal.LogEntry) {
 		}
 		if c.segManager != nil {
 			c.segManager.Insert(entry.Doc)
+		} else {
+			c.docs = append(c.docs, entry.Doc)
+			c.docIndex[entry.Doc.ID] = len(c.docs) - 1
+			c.docIDToPK[entry.Doc.DocID] = entry.Doc.ID
 		}
-		c.docs = append(c.docs, entry.Doc)
-		c.docIndex[entry.Doc.ID] = len(c.docs) - 1
-		c.docIDToPK[entry.Doc.DocID] = entry.Doc.ID
 		if entry.Doc.DocID >= c.nextDocID {
 			c.nextDocID = entry.Doc.DocID + 1
 		}
@@ -260,8 +266,52 @@ func (c *Collection) replayEntry(entry wal.LogEntry) {
 			} else {
 				c.segManager.Insert(entry.Doc)
 			}
+		} else {
+			if existingIdx, exists := c.docIndex[entry.Doc.ID]; exists {
+				for _, field := range c.schema.VectorFields() {
+					if idx, ok := c.indexes[field.Name]; ok {
+						idx.Delete(c.docs[existingIdx].ID)
+					}
+				}
+				entry.Doc.DocID = c.docs[existingIdx].DocID
+				c.docs[existingIdx] = entry.Doc
+				for _, field := range c.schema.VectorFields() {
+					if idx, ok := c.indexes[field.Name]; ok {
+						if v, ok2 := entry.Doc.Vector(field.Name); ok2 && v.Float32s != nil {
+							idx.Add(v.Float32s, entry.Doc.ID)
+						}
+					}
+				}
+			} else {
+				c.docs = append(c.docs, entry.Doc)
+				c.docIndex[entry.Doc.ID] = len(c.docs) - 1
+				c.docIDToPK[entry.Doc.DocID] = entry.Doc.ID
+				if entry.Doc.DocID >= c.nextDocID {
+					c.nextDocID = entry.Doc.DocID + 1
+				}
+				for _, field := range c.schema.VectorFields() {
+					if idx, ok := c.indexes[field.Name]; ok {
+						if v, ok2 := entry.Doc.Vector(field.Name); ok2 && v.Float32s != nil {
+							idx.Add(v.Float32s, entry.Doc.ID)
+						}
+					}
+				}
+			}
 		}
-		if existingIdx, exists := c.docIndex[entry.Doc.ID]; exists {
+	case wal.OpUpdate:
+		if entry.Doc == nil {
+			return
+		}
+		if c.segManager != nil {
+			if existing := c.segManager.GetDoc(entry.Doc.ID); existing != nil {
+				entry.Doc.DocID = existing.DocID
+				c.segManager.Upsert(entry.Doc)
+			}
+		} else {
+			existingIdx, exists := c.docIndex[entry.Doc.ID]
+			if !exists {
+				return
+			}
 			for _, field := range c.schema.VectorFields() {
 				if idx, ok := c.indexes[field.Name]; ok {
 					idx.Delete(c.docs[existingIdx].ID)
@@ -276,53 +326,11 @@ func (c *Collection) replayEntry(entry wal.LogEntry) {
 					}
 				}
 			}
-		} else {
-			c.docs = append(c.docs, entry.Doc)
-			c.docIndex[entry.Doc.ID] = len(c.docs) - 1
-			c.docIDToPK[entry.Doc.DocID] = entry.Doc.ID
-			if entry.Doc.DocID >= c.nextDocID {
-				c.nextDocID = entry.Doc.DocID + 1
-			}
-			for _, field := range c.schema.VectorFields() {
-				if idx, ok := c.indexes[field.Name]; ok {
-					if v, ok2 := entry.Doc.Vector(field.Name); ok2 && v.Float32s != nil {
-						idx.Add(v.Float32s, entry.Doc.ID)
+			for _, field := range c.schema.FTSFields() {
+				if ftsIdx, ok := c.ftsIndexes[field.Name]; ok {
+					if fv, ok2 := entry.Doc.Field(field.Name); ok2 && !fv.Null {
+						ftsIdx.Index(entry.Doc.DocID, fv.StringVal)
 					}
-				}
-			}
-		}
-	case wal.OpUpdate:
-		if entry.Doc == nil {
-			return
-		}
-		if c.segManager != nil {
-			if existing := c.segManager.GetDoc(entry.Doc.ID); existing != nil {
-				entry.Doc.DocID = existing.DocID
-				c.segManager.Upsert(entry.Doc)
-			}
-		}
-		existingIdx, exists := c.docIndex[entry.Doc.ID]
-		if !exists {
-			return
-		}
-		for _, field := range c.schema.VectorFields() {
-			if idx, ok := c.indexes[field.Name]; ok {
-				idx.Delete(c.docs[existingIdx].ID)
-			}
-		}
-		entry.Doc.DocID = c.docs[existingIdx].DocID
-		c.docs[existingIdx] = entry.Doc
-		for _, field := range c.schema.VectorFields() {
-			if idx, ok := c.indexes[field.Name]; ok {
-				if v, ok2 := entry.Doc.Vector(field.Name); ok2 && v.Float32s != nil {
-					idx.Add(v.Float32s, entry.Doc.ID)
-				}
-			}
-		}
-		for _, field := range c.schema.FTSFields() {
-			if ftsIdx, ok := c.ftsIndexes[field.Name]; ok {
-				if fv, ok2 := entry.Doc.Field(field.Name); ok2 && !fv.Null {
-					ftsIdx.Index(entry.Doc.DocID, fv.StringVal)
 				}
 			}
 		}
@@ -330,18 +338,21 @@ func (c *Collection) replayEntry(entry wal.LogEntry) {
 		for _, id := range entry.IDs {
 			if c.segManager != nil {
 				c.segManager.Delete(id)
-			}
-			if idx, exists := c.docIndex[id]; exists {
-				for _, field := range c.schema.VectorFields() {
-					if idx2, ok := c.indexes[field.Name]; ok {
-						idx2.Delete(id)
+			} else {
+				if idx, exists := c.docIndex[id]; exists {
+					for _, field := range c.schema.VectorFields() {
+						if idx2, ok := c.indexes[field.Name]; ok {
+							idx2.Delete(id)
+						}
 					}
-				}
-				c.docs = append(c.docs[:idx], c.docs[idx+1:]...)
-				delete(c.docIndex, id)
-				for pk, pos := range c.docIndex {
-					if pos > idx {
-						c.docIndex[pk] = pos - 1
+					removed := c.docs[idx]
+					delete(c.docIDToPK, removed.DocID)
+					c.docs = append(c.docs[:idx], c.docs[idx+1:]...)
+					delete(c.docIndex, id)
+					for pk, pos := range c.docIndex {
+						if pos > idx {
+							c.docIndex[pk] = pos - 1
+						}
 					}
 				}
 			}
@@ -352,6 +363,10 @@ func (c *Collection) replayEntry(entry wal.LogEntry) {
 func (c *Collection) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	for _, idx := range c.indexes {
+		idx.Close()
+	}
+	c.indexes = nil
 	if c.segManager != nil {
 		c.segManager.Close()
 	}
@@ -376,6 +391,9 @@ func (c *Collection) Options() Options {
 func (c *Collection) Destroy() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	for _, idx := range c.indexes {
+		idx.Close()
+	}
 	c.docs = nil
 	c.docIndex = nil
 	c.indexes = nil
@@ -388,6 +406,9 @@ func (c *Collection) Destroy() error {
 			return err
 		}
 		c.wal = nil
+	}
+	if c.path != "" {
+		return os.RemoveAll(c.path)
 	}
 	return nil
 }
@@ -409,6 +430,9 @@ func (c *Collection) Insert(docs []*doc.Doc) status.Status {
 		if err := d.Validate(c.schema); err != nil {
 			return status.NewInvalidArgument(err.Error())
 		}
+		if c.pkExists(d.ID) {
+			return status.NewInvalidArgument(fmt.Sprintf("doc '%s' already exists, use Upsert instead", d.ID))
+		}
 
 		docID := c.nextDocID
 		c.nextDocID++
@@ -426,7 +450,9 @@ func (c *Collection) Insert(docs []*doc.Doc) status.Status {
 		c.addToInvertIndexes(d)
 
 		if c.wal != nil {
-			c.wal.AppendInsert(d.ID, d)
+			if err := c.wal.AppendInsert(d.ID, d); err != nil {
+				return status.NewInternalError(fmt.Sprintf("WAL write failed: %v", err))
+			}
 		}
 	}
 
@@ -492,7 +518,9 @@ func (c *Collection) Upsert(docs []*doc.Doc) status.Status {
 
 	if c.wal != nil {
 		for _, d := range docs {
-			c.wal.AppendUpsert(d.ID, d)
+			if err := c.wal.AppendUpsert(d.ID, d); err != nil {
+				return status.NewInternalError(fmt.Sprintf("WAL write failed: %v", err))
+			}
 		}
 	}
 
@@ -536,7 +564,9 @@ func (c *Collection) Update(docs []*doc.Doc) status.Status {
 
 	if c.wal != nil {
 		for _, d := range docs {
-			c.wal.AppendUpdate(d.ID, d)
+			if err := c.wal.AppendUpdate(d.ID, d); err != nil {
+				return status.NewInternalError(fmt.Sprintf("WAL write failed: %v", err))
+			}
 		}
 	}
 
@@ -552,7 +582,9 @@ func (c *Collection) Delete(ids []string) status.Status {
 	}
 
 	if c.wal != nil {
-		c.wal.AppendDeletes(ids)
+		if err := c.wal.AppendDeletes(ids); err != nil {
+			return status.NewInternalError(fmt.Sprintf("WAL write failed: %v", err))
+		}
 	}
 
 	return status.OKStatus()
@@ -601,7 +633,9 @@ func (c *Collection) DeleteByFilter(filter string) status.Status {
 	}
 
 	if c.wal != nil && len(toDelete) > 0 {
-		c.wal.AppendDeletes(toDelete)
+		if err := c.wal.AppendDeletes(toDelete); err != nil {
+			return status.NewInternalError(fmt.Sprintf("WAL write failed: %v", err))
+		}
 	}
 
 	return status.OKStatus()
@@ -769,7 +803,7 @@ func (c *Collection) Query(q *query.SearchQuery) ([]map[string]interface{}, stat
 					continue
 				}
 				if fv, ok := docObj.Field(fn); ok {
-					item[fn] = fv
+					item[fn] = extractValue(fv)
 				}
 				if vv, ok := docObj.Vector(fn); ok {
 					item[fn] = vv
@@ -782,7 +816,7 @@ func (c *Collection) Query(q *query.SearchQuery) ([]map[string]interface{}, stat
 			}
 			for _, fn := range docObj.FieldNames() {
 				fv, _ := docObj.Field(fn)
-				item[fn] = fv
+				item[fn] = extractValue(fv)
 			}
 		}
 
@@ -881,7 +915,7 @@ func (c *Collection) MultiQuery(mq *query.MultiQuery) ([]map[string]interface{},
 						continue
 					}
 					if fv, ok := docObj.Field(fn); ok {
-						item[fn] = fv
+						item[fn] = extractValue(fv)
 					}
 				}
 			} else if mq.IncludeVector {
@@ -938,7 +972,7 @@ func (c *Collection) GroupBy(gq *query.GroupByVectorQuery) ([]query.GroupResult,
 		if !ok {
 			continue
 		}
-		groupKey := fmt.Sprintf("%v", fv)
+		groupKey := fmt.Sprintf("%v", extractValue(fv))
 		if len(groups[groupKey]) >= gq.TopKPerGroup {
 			continue
 		}
@@ -953,7 +987,7 @@ func (c *Collection) GroupBy(gq *query.GroupByVectorQuery) ([]query.GroupResult,
 					continue
 				}
 				if fv2, ok2 := d.Field(fn); ok2 {
-					item[fn] = fv2
+					item[fn] = extractValue(fv2)
 				}
 			}
 		} else if gq.IncludeVector {
@@ -1029,6 +1063,15 @@ func (c *Collection) CreateIndex(fieldName string, params *param.IndexParams) st
 		return status.NewInternalError(err.Error())
 	}
 	c.indexes[fieldName] = idx
+
+	allDocs := c.allDocs()
+	for _, d := range allDocs {
+		v, ok := d.Vector(fieldName)
+		if ok && v.Float32s != nil {
+			idx.Add(v.Float32s, d.ID)
+		}
+	}
+
 	return status.OKStatus()
 }
 
@@ -1225,24 +1268,7 @@ func numericVal(v doc.Value) float64 {
 	case types.DataTypeUint32:
 		return float64(v.Uint32Val)
 	default:
-		if v.DoubleVal != 0 {
-			return v.DoubleVal
-		}
-		if v.FloatVal != 0 {
-			return float64(v.FloatVal)
-		}
-		if v.Int64Val != 0 {
-			return float64(v.Int64Val)
-		}
-		if v.Uint64Val != 0 {
-			return float64(v.Uint64Val)
-		}
-		if v.Int32Val != 0 {
-			return float64(v.Int32Val)
-		}
-		if v.Uint32Val != 0 {
-			return float64(v.Uint32Val)
-		}
+
 		return 0
 	}
 }
@@ -1466,4 +1492,30 @@ func wildcardMatch(s, pattern string) bool {
 		pi++
 	}
 	return pi == len(pattern)
+}
+
+func extractValue(v doc.Value) interface{} {
+	if v.Null {
+		return nil
+	}
+	switch v.Type {
+	case types.DataTypeBool:
+		return v.BoolVal
+	case types.DataTypeInt32:
+		return v.Int32Val
+	case types.DataTypeUint32:
+		return v.Uint32Val
+	case types.DataTypeInt64:
+		return v.Int64Val
+	case types.DataTypeUint64:
+		return v.Uint64Val
+	case types.DataTypeFloat:
+		return v.FloatVal
+	case types.DataTypeDouble:
+		return v.DoubleVal
+	case types.DataTypeString:
+		return v.StringVal
+	default:
+		return v.StringVal
+	}
 }

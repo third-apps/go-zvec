@@ -106,9 +106,10 @@ func (s *MemoryStorage) Read(offset int64, data []byte) (int, error) {
 func (s *MemoryStorage) Write(offset int64, data []byte) error {
 	end := offset + int64(len(data))
 	if end > int64(len(s.data)) {
-		newData := make([]byte, end)
+		newCap := max(int64(len(s.data))*2, end)
+		newData := make([]byte, newCap)
 		copy(newData, s.data)
-		s.data = newData
+		s.data = newData[:end]
 	}
 	copy(s.data[offset:], data)
 	return nil

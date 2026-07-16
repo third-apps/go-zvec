@@ -27,6 +27,7 @@ type IVFIndex struct {
 	assignments []int
 	inverted    [][]int
 	trained     bool
+	trainOnce   sync.Once
 }
 
 func NewIVFIndex(dimension int, metricType types.MetricType, nList, nIters int) *IVFIndex {
@@ -121,16 +122,15 @@ func (idx *IVFIndex) trainLocked() {
 }
 
 func (idx *IVFIndex) Search(query []float32, topK int) []flat.SearchResult {
-	idx.mu.RLock()
-	if !idx.trained {
-		idx.mu.RUnlock()
+	idx.trainOnce.Do(func() {
 		idx.mu.Lock()
 		if !idx.trained {
 			idx.trainLocked()
 		}
 		idx.mu.Unlock()
-		idx.mu.RLock()
-	}
+	})
+
+	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
 	if len(idx.docs) == 0 {
@@ -208,16 +208,15 @@ func (idx *IVFIndex) Search(query []float32, topK int) []flat.SearchResult {
 
 func (idx *IVFIndex) SearchWithFilter(query []float32, topK int,
 	filterFn func(pk string) bool) []flat.SearchResult {
-	idx.mu.RLock()
-	if !idx.trained {
-		idx.mu.RUnlock()
+	idx.trainOnce.Do(func() {
 		idx.mu.Lock()
 		if !idx.trained {
 			idx.trainLocked()
 		}
 		idx.mu.Unlock()
-		idx.mu.RLock()
-	}
+	})
+
+	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
 	if len(idx.docs) == 0 {
@@ -338,6 +337,10 @@ func (idx *IVFIndex) Size() int {
 
 func (idx *IVFIndex) Dimension() int {
 	return idx.dimension
+}
+
+func (idx *IVFIndex) Close() error {
+	return nil
 }
 
 func (idx *IVFIndex) findNearestCentroid(vec []float32) int {

@@ -78,7 +78,7 @@ func NewHNSWIndex(dimension int, metricType types.MetricType, m, efConstruction 
 		metricType:     metricType,
 		distFn:         metric.GetDistanceFunc(metricType),
 		m:              m,
-		mMax:           m * 2,
+		mMax:           m,
 		mMax0:          m * 2,
 		ef:             300,
 		efConstruction: efConstruction,
@@ -281,6 +281,10 @@ func (idx *HNSWIndex) Size() int {
 
 func (idx *HNSWIndex) Dimension() int {
 	return idx.dimension
+}
+
+func (idx *HNSWIndex) Close() error {
+	return nil
 }
 
 func (idx *HNSWIndex) searchLayer(queryVec []float32, entryID uint64, ef float64, layer int) []neighbor {

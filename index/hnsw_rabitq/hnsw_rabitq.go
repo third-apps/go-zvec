@@ -65,7 +65,7 @@ type HNSWRabitqIndex struct {
 	maxLevel       int
 	rng            *rand.Rand
 	codeSize       int
-
+	quantizer      *quantizer.Int4Quantizer
 }
 
 func NewHNSWRabitqIndex(dimension int, metricType types.MetricType, m, efConstruction int) *HNSWRabitqIndex {
@@ -74,7 +74,7 @@ func NewHNSWRabitqIndex(dimension int, metricType types.MetricType, m, efConstru
 		metricType:     metricType,
 		distFn:         metric.GetDistanceFunc(metricType),
 		m:              m,
-		mMax:           m * 2,
+		mMax:           m,
 		mMax0:          m * 2,
 		ef:             300,
 		efConstruction: efConstruction,
@@ -87,6 +87,7 @@ func NewHNSWRabitqIndex(dimension int, metricType types.MetricType, m, efConstru
 		maxLevel:       -1,
 		rng:            rand.New(rand.NewSource(42)),
 		codeSize:       (dimension + 1) / 2,
+		quantizer:      quantizer.NewInt4Quantizer(dimension, true),
 	}
 }
 
@@ -106,9 +107,7 @@ func (idx *HNSWRabitqIndex) Add(vector []float32, pk string) uint64 {
 		v = metric.Normalize(v)
 	}
 
-	q := quantizer.NewInt4Quantizer(idx.dimension, true)
-	q.Train([][]float32{v})
-	code := q.Encode(v, nil)
+	code := idx.quantizer.Encode(v, nil)
 
 	docID := uint64(len(idx.codes))
 	idx.codes = append(idx.codes, code)
@@ -285,6 +284,10 @@ func (idx *HNSWRabitqIndex) Size() int {
 
 func (idx *HNSWRabitqIndex) Dimension() int {
 	return idx.dimension
+}
+
+func (idx *HNSWRabitqIndex) Close() error {
+	return nil
 }
 
 func (idx *HNSWRabitqIndex) decodeInt4(code []byte) []float32 {

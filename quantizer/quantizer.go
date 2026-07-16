@@ -349,11 +349,20 @@ func (q *RaBitQQuantizer) Decode(src []byte, dst []float32) []float32 {
 		dst = make([]float32, q.dimension)
 	}
 
+	norm := math.Float32frombits(binary.LittleEndian.Uint32(src[codeSize:]))
+
 	for i := 0; i < q.dimension; i++ {
 		if src[i/8]&(1<<(i%8)) != 0 {
 			dst[i] = 1.0
 		} else {
 			dst[i] = -1.0
+		}
+	}
+
+	if norm > 0 {
+		scale := norm / float32(math.Sqrt(float64(q.dimension)))
+		for i := 0; i < q.dimension; i++ {
+			dst[i] *= scale
 		}
 	}
 
@@ -567,6 +576,7 @@ func (q *PQQuantizer) kMeans(data [][]float32, k, dim int) [][]float32 {
 	assignments := make([]int, len(data))
 
 	for iter := 0; iter < 20; iter++ {
+		changed := false
 		for i, v := range data {
 			bestIdx := 0
 			bestDist := float32(1e30)
@@ -581,7 +591,14 @@ func (q *PQQuantizer) kMeans(data [][]float32, k, dim int) [][]float32 {
 					bestIdx = j
 				}
 			}
-			assignments[i] = bestIdx
+			if assignments[i] != bestIdx {
+				assignments[i] = bestIdx
+				changed = true
+			}
+		}
+
+		if !changed {
+			break
 		}
 
 		counts := make([]int, k)

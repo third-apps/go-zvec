@@ -67,7 +67,7 @@ func (idx *VamanaIndex) Add(vector []float32, pk string) uint64 {
 
 	candidates := idx.greedySearch(v, idx.entryPoint, idx.searchListSize)
 	idx.pruneAndAdd(int(docID), candidates)
-	idx.entryPoint = int(docID)
+
 
 	if idx.saturateGraph {
 		idx.ensureDegree(int(docID))
@@ -184,6 +184,10 @@ func (idx *VamanaIndex) Size() int {
 
 func (idx *VamanaIndex) Dimension() int {
 	return idx.dimension
+}
+
+func (idx *VamanaIndex) Close() error {
+	return nil
 }
 
 type vNeighbor struct {

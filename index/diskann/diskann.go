@@ -25,6 +25,7 @@ type cacheEntry struct {
 }
 
 type lruCache struct {
+	mu       sync.Mutex
 	capacity int
 	items    map[uint64]*list.Element
 	order    *list.List
@@ -39,6 +40,8 @@ func newLRUCache(capacity int) *lruCache {
 }
 
 func (c *lruCache) Get(key uint64) ([]float32, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if elem, ok := c.items[key]; ok {
 		c.order.MoveToFront(elem)
 		return elem.Value.(*cacheEntry).vec, true
@@ -47,6 +50,8 @@ func (c *lruCache) Get(key uint64) ([]float32, bool) {
 }
 
 func (c *lruCache) Put(key uint64, vec []float32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if elem, ok := c.items[key]; ok {
 		c.order.MoveToFront(elem)
 		elem.Value.(*cacheEntry).vec = vec
@@ -63,6 +68,15 @@ func (c *lruCache) Put(key uint64, vec []float32) {
 	entry := &cacheEntry{key: key, vec: vec}
 	elem := c.order.PushFront(entry)
 	c.items[key] = elem
+}
+
+func (c *lruCache) Delete(key uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if elem, ok := c.items[key]; ok {
+		c.order.Remove(elem)
+		delete(c.items, key)
+	}
 }
 
 type DiskAnnIndex struct {
@@ -133,16 +147,12 @@ func (idx *DiskAnnIndex) InitStorage() error {
 }
 
 func (idx *DiskAnnIndex) cacheGet(docID uint64) ([]float32, bool) {
-	idx.mu.RLock()
 	v, ok := idx.vectorCache.Get(docID)
-	idx.mu.RUnlock()
 	return v, ok
 }
 
 func (idx *DiskAnnIndex) cachePut(docID uint64, vec []float32) {
-	idx.mu.Lock()
 	idx.vectorCache.Put(docID, vec)
-	idx.mu.Unlock()
 }
 
 func (idx *DiskAnnIndex) getVector(docID uint64) []float32 {
@@ -268,6 +278,7 @@ func (idx *DiskAnnIndex) Delete(pk string) bool {
 
 	for i, p := range idx.pks {
 		if p == pk {
+			idx.vectorCache.Delete(uint64(i))
 			idx.pks = append(idx.pks[:i], idx.pks[i+1:]...)
 			idx.adjList = append(idx.adjList[:i], idx.adjList[i+1:]...)
 			for j := range idx.adjList {
@@ -444,6 +455,11 @@ func (idx *DiskAnnIndex) trimNeighbors(nodeID uint64, newID uint64) {
 	sort.Slice(dists, func(i, j int) bool {
 		return dists[i].dist < dists[j].dist
 	})
+
+	if len(dists) == 0 {
+		idx.adjList[nodeID] = nil
+		return
+	}
 
 	kept := []uint64{dists[0].id}
 	for i := 1; i < len(dists); i++ {

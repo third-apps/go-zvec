@@ -107,3 +107,7 @@ func (idx *SparseIndex) Size() int {
 	defer idx.mu.RUnlock()
 	return len(idx.vectors)
 }
+
+func (idx *SparseIndex) Close() error {
+	return nil
+}

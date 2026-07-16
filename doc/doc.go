@@ -173,6 +173,18 @@ func (d *Doc) Validate(s *schema.CollectionSchema) error {
 					return fmt.Errorf("vector field '%s' dimension mismatch: expected %d, got %d",
 						field.Name, field.Dimension, len(v.Float32s))
 				}
+			} else {
+				sv, ok := d.sparseVectors[field.Name]
+				if !ok && field.Nullable {
+					continue
+				}
+				if !ok {
+					return fmt.Errorf("doc missing sparse vector field '%s'", field.Name)
+				}
+				if len(sv.Indices) != len(sv.Values) {
+					return fmt.Errorf("sparse vector field '%s' indices/values length mismatch: %d vs %d",
+						field.Name, len(sv.Indices), len(sv.Values))
+				}
 			}
 		} else {
 			_, ok := d.fields[field.Name]

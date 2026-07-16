@@ -107,11 +107,14 @@ func (idx *InvertedIndex) DocFreq(token string) int {
 }
 
 func (idx *InvertedIndex) RemoveDocument(docID uint64) {
+	removed := false
 	for token, postings := range idx.dict {
 		filtered := make([]Posting, 0, len(postings))
 		for _, p := range postings {
 			if p.DocID != docID {
 				filtered = append(filtered, p)
+			} else {
+				removed = true
 			}
 		}
 		if len(filtered) == 0 {
@@ -120,7 +123,9 @@ func (idx *InvertedIndex) RemoveDocument(docID uint64) {
 			idx.dict[token] = filtered
 		}
 	}
-	idx.totalDocs--
+	if removed && idx.totalDocs > 0 {
+		idx.totalDocs--
+	}
 }
 
 type BM25Scorer struct {
