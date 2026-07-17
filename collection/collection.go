@@ -39,6 +39,8 @@ type Options struct {
 
 type Collection struct {
 	mu            sync.RWMutex
+	indexMu       sync.RWMutex
+	ftsMu         sync.RWMutex
 	path          string
 	schema        *schema.CollectionSchema
 	options       Options
@@ -754,8 +756,8 @@ func (c *Collection) pkExists(pk string) bool {
 }
 
 func (c *Collection) Query(q *query.SearchQuery) ([]map[string]interface{}, status.Status) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.indexMu.RLock()
+	defer c.indexMu.RUnlock()
 
 	var results []flat.SearchResult
 	if q.Target.FTS != nil {
@@ -837,8 +839,8 @@ func (c *Collection) Query(q *query.SearchQuery) ([]map[string]interface{}, stat
 }
 
 func (c *Collection) BatchQuery(queries []*query.SearchQuery) [][]map[string]interface{} {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.indexMu.RLock()
+	defer c.indexMu.RUnlock()
 
 	results := make([][]map[string]interface{}, len(queries))
 	var wg sync.WaitGroup
@@ -926,8 +928,8 @@ func (c *Collection) BatchQuery(queries []*query.SearchQuery) [][]map[string]int
 }
 
 func (c *Collection) FTSQuery(fieldName string, queryStr string, topK int) ([]map[string]interface{}, status.Status) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.ftsMu.RLock()
+	defer c.ftsMu.RUnlock()
 
 	ftsIdx, ok := c.ftsIndexes[fieldName]
 	if !ok {
@@ -948,8 +950,8 @@ func (c *Collection) FTSQuery(fieldName string, queryStr string, topK int) ([]ma
 }
 
 func (c *Collection) MultiQuery(mq *query.MultiQuery) ([]map[string]interface{}, status.Status) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.indexMu.RLock()
+	defer c.indexMu.RUnlock()
 
 	var allResults [][]flat.SearchResult
 	for _, sq := range mq.SubQueries {
@@ -1030,8 +1032,8 @@ func (c *Collection) MultiQuery(mq *query.MultiQuery) ([]map[string]interface{},
 }
 
 func (c *Collection) GroupBy(gq *query.GroupByVectorQuery) ([]query.GroupResult, status.Status) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.indexMu.RLock()
+	defer c.indexMu.RUnlock()
 
 	idx, ok := c.indexes[gq.Target.FieldName]
 	if !ok {
