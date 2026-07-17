@@ -42,11 +42,13 @@ func main() {
 	vectors := generateVectors(numDocs, dim)
 	queryVecs := generateVectors(numQuery, dim)
 
+
 	benchFlat(vectors, queryVecs)
 	benchIVF(vectors, queryVecs)
 	benchHNSW(vectors, queryVecs)
 	benchVamana(vectors, queryVecs)
 	benchHNSWRabitq(vectors, queryVecs)
+	benchConcurrentSearch(vectors, queryVecs)
 
 
 
@@ -207,4 +209,33 @@ func benchHNSWRabitq(vectors, queryVecs [][]float32) {
 	insertMs := insertBenchData(c, vectors)
 	searchMs, qps, avgLat, cnt := runSearchBench(c, queryVecs)
 	printResult(benchResult{"HNSW RaBitQ (M=16, totalBits=1)", insertMs, searchMs, qps, avgLat, cnt})
+}
+
+func benchConcurrentSearch(vectors, queryVecs [][]float32) {
+	p := &IndexParams{params: param.NewVamanaIndexParams(types.MetricTypeCosine, 16, 30, 1.2, false, false)}
+	c, dir := createBenchCollection("concurrent_vamana", p)
+	defer c.Close()
+	defer os.RemoveAll(dir)
+
+	insertBenchData(c, vectors)
+
+	queries := make([]*query.SearchQuery, len(queryVecs))
+	for i, qv := range queryVecs {
+		queries[i] = &query.SearchQuery{
+			Target: query.QueryTarget{
+				FieldName: "vec",
+				Vector:    &query.VectorClause{QueryVector: qv},
+			},
+			TopK: topK,
+		}
+	}
+
+	start := time.Now()
+	results := c.BatchQuery(queries)
+	elapsed := time.Since(start)
+	qps := float64(len(queries)) / elapsed.Seconds()
+	avgLat := float64(elapsed.Milliseconds()) / float64(len(queries))
+	fmt.Printf("\n[Concurrent Vamana (BatchQuery, %d goroutines)]\n", len(queries))
+	fmt.Printf("  搜索耗时: %d ms (%d queries)\n", elapsed.Milliseconds(), len(queries))
+	fmt.Printf("  QPS: %.0f | 平均延迟: %.3f ms | 结果数: %d\n", qps, avgLat, len(results[0]))
 }

@@ -59,6 +59,8 @@ type VamanaIndex struct {
 	graph      [][]int
 	rng        *rand.Rand
 	entryPoint int
+
+	visitedPool sync.Pool
 }
 
 func NewVamanaIndex(dimension int, metricType types.MetricType,
@@ -76,6 +78,12 @@ func NewVamanaIndex(dimension int, metricType types.MetricType,
 		graph:          make([][]int, 0),
 		rng:            rand.New(rand.NewSource(42)),
 		entryPoint:     -1,
+		visitedPool: sync.Pool{
+			New: func() interface{} {
+				b := make([]byte, 0, 65536)
+				return &b
+			},
+		},
 	}
 }
 
@@ -103,13 +111,17 @@ func (idx *VamanaIndex) Add(vector []float32, pk string) uint64 {
 	idx.pruneAndAdd(int(docID), candidates)
 
 	if idx.saturateGraph {
-		idx.ensureDegree(int(docID))
+		idx.ensureDegreeFromCandidates(int(docID), candidates)
 	}
 
 	return docID
 }
 
 func (idx *VamanaIndex) Search(query []float32, topK int) []flat.SearchResult {
+	return idx.SearchWithListSize(query, topK, 0)
+}
+
+func (idx *VamanaIndex) SearchWithListSize(query []float32, topK, searchListSize int) []flat.SearchResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
@@ -123,7 +135,11 @@ func (idx *VamanaIndex) Search(query []float32, topK int) []flat.SearchResult {
 		q = metric.Normalize(q)
 	}
 
-	candidates := idx.greedySearch(q, idx.entryPoint, idx.searchListSize)
+	L := idx.searchListSize
+	if searchListSize > 0 {
+		L = searchListSize
+	}
+	candidates := idx.greedySearch(q, idx.entryPoint, L)
 
 	if topK > len(candidates) {
 		topK = len(candidates)
@@ -226,7 +242,21 @@ func (idx *VamanaIndex) Close() error {
 
 func (idx *VamanaIndex) greedySearch(query []float32, start int, L int) []vNeighbor {
 	n := len(idx.docs)
-	visited := make([]byte, n)
+	visitedPtr := idx.visitedPool.Get().(*[]byte)
+	var visited []byte
+	if cap(*visitedPtr) >= n {
+		visited = (*visitedPtr)[:n]
+		for i := range visited {
+			visited[i] = 0
+		}
+	} else {
+		visited = make([]byte, n)
+	}
+	defer func() {
+		*visitedPtr = visited[:cap(visited)]
+		idx.visitedPool.Put(visitedPtr)
+	}()
+
 	visited[start] = 1
 
 	startDist := idx.distFn(query, idx.docs[start])
@@ -371,24 +401,20 @@ func (idx *VamanaIndex) trimNeighbors(nodeID int, maxDegree int) {
 	}
 }
 
-func (idx *VamanaIndex) ensureDegree(nodeID int) {
+func (idx *VamanaIndex) ensureDegreeFromCandidates(nodeID int, candidates []vNeighbor) {
 	currentDegree := len(idx.graph[nodeID])
 	if currentDegree >= idx.maxDegree {
 		return
 	}
 
-	type candidate struct {
-		id   int
-		dist float32
-	}
-	var candidates []candidate
-	for i := range idx.docs {
-		if i == nodeID {
+
+	for _, c := range candidates {
+		if c.id == nodeID {
 			continue
 		}
 		alreadyConnected := false
 		for _, nb := range idx.graph[nodeID] {
-			if nb == i {
+			if nb == c.id {
 				alreadyConnected = true
 				break
 			}
@@ -396,20 +422,9 @@ func (idx *VamanaIndex) ensureDegree(nodeID int) {
 		if alreadyConnected {
 			continue
 		}
-		dist := idx.distFn(idx.docs[nodeID], idx.docs[i])
-		candidates = append(candidates, candidate{id: i, dist: dist})
-	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].dist < candidates[j].dist
-	})
-
-	needed := idx.maxDegree - currentDegree
-	if needed > len(candidates) {
-		needed = len(candidates)
-	}
-
-	for i := 0; i < needed; i++ {
-		idx.addUndirectedEdge(nodeID, candidates[i].id)
+		idx.addUndirectedEdge(nodeID, c.id)
+		if len(idx.graph[nodeID]) >= idx.maxDegree {
+			break
+		}
 	}
 }

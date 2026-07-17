@@ -29,11 +29,12 @@ type HNSWIndex struct {
 	ef             int
 	efConstruction int
 
-	adjList    [][]uint64
-	nodeLevel  []int
-	enterPoint int
-	maxLevel   int
-	rng        *rand.Rand
+	adjList      [][]uint64
+	nodeLevel    []int
+	enterPoint   int
+	maxLevel     int
+	rng          *rand.Rand
+	visitedPool  sync.Pool
 }
 
 func NewHNSWIndex(dimension int, metricType types.MetricType, m, efConstruction int) *HNSWIndex {
@@ -53,6 +54,12 @@ func NewHNSWIndex(dimension int, metricType types.MetricType, m, efConstruction 
 		enterPoint:     -1,
 		maxLevel:       -1,
 		rng:            rand.New(rand.NewSource(42)),
+		visitedPool: sync.Pool{
+			New: func() interface{} {
+				b := make([]byte, 0, 65536)
+				return &b
+			},
+		},
 	}
 }
 
@@ -252,7 +259,21 @@ func (idx *HNSWIndex) Close() error {
 
 func (idx *HNSWIndex) searchLayer(queryVec []float32, entryID uint64, ef float64, layer int) []neighbor {
 	n := len(idx.vectors)
-	visited := make([]byte, n)
+	visitedPtr := idx.visitedPool.Get().(*[]byte)
+	var visited []byte
+	if cap(*visitedPtr) >= n {
+		visited = (*visitedPtr)[:n]
+		for i := range visited {
+			visited[i] = 0
+		}
+	} else {
+		visited = make([]byte, n)
+	}
+	defer func() {
+		*visitedPtr = visited[:cap(visited)]
+		idx.visitedPool.Put(visitedPtr)
+	}()
+
 	visited[entryID] = 1
 
 	entryDist := idx.distFn(queryVec, idx.vectors[entryID])

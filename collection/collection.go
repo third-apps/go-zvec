@@ -836,6 +836,95 @@ func (c *Collection) Query(q *query.SearchQuery) ([]map[string]interface{}, stat
 	return outputs, status.OKStatus()
 }
 
+func (c *Collection) BatchQuery(queries []*query.SearchQuery) [][]map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	results := make([][]map[string]interface{}, len(queries))
+	var wg sync.WaitGroup
+	wg.Add(len(queries))
+
+	for i, q := range queries {
+		go func(idx int, q *query.SearchQuery) {
+			defer wg.Done()
+			var searchResults []flat.SearchResult
+
+			if q.Target.FTS != nil {
+				ftsIdx, ok := c.ftsIndexes[q.Target.FieldName]
+				if !ok {
+					return
+				}
+				ftsResults := ftsIdx.Search(q.Target.FTS.QueryString, q.TopK)
+				for _, fr := range ftsResults {
+					pk := c.resolveDocIDToPK(fr.DocID)
+					searchResults = append(searchResults, flat.SearchResult{
+						DocID: fr.DocID,
+						Score: float32(fr.Score),
+						PK:    pk,
+					})
+				}
+			} else {
+				idx2, ok := c.indexes[q.Target.FieldName]
+				if !ok {
+					return
+				}
+				if q.Filter != "" {
+					searchResults = idx2.SearchWithFilter(
+						q.Target.Vector.QueryVector, q.TopK,
+						func(pk string) bool {
+							d := c.getDocByPK(pk)
+							if d == nil {
+								return false
+							}
+							return matchFilter(d, q.Filter)
+						})
+				} else {
+					searchResults = idx2.Search(q.Target.Vector.QueryVector, q.TopK)
+				}
+			}
+
+			outputs := make([]map[string]interface{}, len(searchResults))
+			for j, r := range searchResults {
+				docObj := c.getDocByPK(r.PK)
+				item := map[string]interface{}{
+					"id":    r.PK,
+					"score": r.Score,
+				}
+				if q.IncludeDocID && docObj != nil {
+					item["doc_id"] = docObj.DocID
+				}
+				if docObj != nil && len(q.OutputFields) > 0 {
+					for _, fn := range q.OutputFields {
+						if fn == "id" || fn == "score" || fn == "doc_id" {
+							continue
+						}
+						if fv, ok := docObj.Field(fn); ok {
+							item[fn] = extractValue(fv)
+						}
+						if vv, ok := docObj.Vector(fn); ok {
+							item[fn] = vv
+						}
+					}
+				} else if docObj != nil && q.IncludeVector {
+					for _, fn := range docObj.VectorNames() {
+						v, _ := docObj.Vector(fn)
+						item[fn] = v
+					}
+					for _, fn := range docObj.FieldNames() {
+						fv, _ := docObj.Field(fn)
+						item[fn] = extractValue(fv)
+					}
+				}
+				outputs[j] = item
+			}
+			results[idx] = outputs
+		}(i, q)
+	}
+
+	wg.Wait()
+	return results
+}
+
 func (c *Collection) FTSQuery(fieldName string, queryStr string, topK int) ([]map[string]interface{}, status.Status) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
