@@ -70,30 +70,21 @@ type Posting struct {
 type InvertedIndex struct {
 	dict      map[string][]Posting
 	totalDocs int
+	docIDs    map[uint64]struct{}
 }
 
 func NewInvertedIndex() *InvertedIndex {
 	return &InvertedIndex{
-		dict: make(map[string][]Posting),
+		dict:   make(map[string][]Posting),
+		docIDs: make(map[uint64]struct{}),
 	}
 }
 
 func (idx *InvertedIndex) AddDocument(docID uint64, tokens []string) {
-	exists := false
-	for _, postings := range idx.dict {
-		for _, p := range postings {
-			if p.DocID == docID {
-				exists = true
-				break
-			}
-		}
-		if exists {
-			break
-		}
-	}
-	if exists {
+	if _, exists := idx.docIDs[docID]; exists {
 		idx.RemoveDocument(docID)
 	}
+	idx.docIDs[docID] = struct{}{}
 	idx.totalDocs++
 	positions := make(map[string][]int)
 	for pos, token := range tokens {
@@ -140,6 +131,7 @@ func (idx *InvertedIndex) RemoveDocument(docID uint64) {
 	}
 	if removed && idx.totalDocs > 0 {
 		idx.totalDocs--
+		delete(idx.docIDs, docID)
 	}
 }
 

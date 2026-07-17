@@ -1,7 +1,7 @@
 package flat
 
 import (
-	"sort"
+	"container/heap"
 	"sync"
 
 	"github.com/third-apps/go-zvec/metric"
@@ -12,6 +12,25 @@ type SearchResult struct {
 	DocID uint64
 	Score float32
 	PK    string
+}
+
+type flatMaxHeapItem struct {
+	dist  float32
+	index int
+}
+
+type flatMaxHeap []flatMaxHeapItem
+
+func (h flatMaxHeap) Len() int            { return len(h) }
+func (h flatMaxHeap) Less(i, j int) bool  { return h[i].dist > h[j].dist }
+func (h flatMaxHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *flatMaxHeap) Push(x interface{}) { *h = append(*h, x.(flatMaxHeapItem)) }
+func (h *flatMaxHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
 }
 
 type FlatIndex struct {
@@ -60,31 +79,32 @@ func (idx *FlatIndex) Search(query []float32, topK int) []SearchResult {
 		q = metric.Normalize(q)
 	}
 
-	type distIdx struct {
-		dist  float32
-		index int
+	if topK > len(idx.vectors) {
+		topK = len(idx.vectors)
 	}
 
-	results := make([]distIdx, len(idx.vectors))
+	h := make(flatMaxHeap, 0, topK)
 	for i, v := range idx.vectors {
-		results[i] = distIdx{dist: idx.distFn(q, v), index: i}
+		d := idx.distFn(q, v)
+		if h.Len() < topK {
+			heap.Push(&h, flatMaxHeapItem{dist: d, index: i})
+		} else if d < h[0].dist {
+			h[0] = flatMaxHeapItem{dist: d, index: i}
+			heap.Fix(&h, 0)
+		}
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].dist < results[j].dist
-	})
-
-	if topK > len(results) {
-		topK = len(results)
+	final := make([]SearchResult, h.Len())
+	items := make([]flatMaxHeapItem, h.Len())
+	for h.Len() > 0 {
+		item := heap.Pop(&h).(flatMaxHeapItem)
+		items[h.Len()] = item
 	}
-
-	final := make([]SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		r := results[i]
+	for i, item := range items {
 		final[i] = SearchResult{
-			DocID: uint64(r.index),
-			Score: 1.0 / (1.0 + r.dist),
-			PK:    idx.pks[r.index],
+			DocID: uint64(item.index),
+			Score: 1.0 / (1.0 + item.dist),
+			PK:    idx.pks[item.index],
 		}
 	}
 	return final
@@ -102,35 +122,31 @@ func (idx *FlatIndex) SearchWithFilter(query []float32, topK int,
 		q = metric.Normalize(q)
 	}
 
-	type distIdx struct {
-		dist  float32
-		index int
-	}
-
-	var candidates []distIdx
+	h := make(flatMaxHeap, 0, topK)
 	for i, v := range idx.vectors {
-		if filterFn(idx.pks[i]) {
-			candidates = append(candidates, distIdx{
-				dist: idx.distFn(q, v), index: i,
-			})
+		if !filterFn(idx.pks[i]) {
+			continue
+		}
+		d := idx.distFn(q, v)
+		if h.Len() < topK {
+			heap.Push(&h, flatMaxHeapItem{dist: d, index: i})
+		} else if d < h[0].dist {
+			h[0] = flatMaxHeapItem{dist: d, index: i}
+			heap.Fix(&h, 0)
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].dist < candidates[j].dist
-	})
-
-	if topK > len(candidates) {
-		topK = len(candidates)
+	final := make([]SearchResult, h.Len())
+	items := make([]flatMaxHeapItem, h.Len())
+	for h.Len() > 0 {
+		item := heap.Pop(&h).(flatMaxHeapItem)
+		items[h.Len()] = item
 	}
-
-	final := make([]SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		c := candidates[i]
+	for i, item := range items {
 		final[i] = SearchResult{
-			DocID: uint64(c.index),
-			Score: 1.0 / (1.0 + c.dist),
-			PK:    idx.pks[c.index],
+			DocID: uint64(item.index),
+			Score: 1.0 / (1.0 + item.dist),
+			PK:    idx.pks[item.index],
 		}
 	}
 	return final

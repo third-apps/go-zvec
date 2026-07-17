@@ -15,7 +15,7 @@ func GetDistanceFunc(metric types.MetricType) DistanceFunc {
 	case types.MetricTypeIP:
 		return InnerProduct
 	case types.MetricTypeCosine:
-		return CosineDistance
+		return InnerProduct
 	case types.MetricTypeMIPSL2:
 		return L2Squared
 	default:
@@ -88,6 +88,20 @@ func Normalize(v []float32) []float32 {
 		result[i] = x / norm
 	}
 	return result
+}
+
+func NormalizeInPlace(v []float32) {
+	var norm float32
+	for _, x := range v {
+		norm += x * x
+	}
+	norm = float32(math.Sqrt(float64(norm)))
+	if norm == 0 {
+		return
+	}
+	for i := range v {
+		v[i] /= norm
+	}
 }
 
 func SparseInnerProduct(indicesA []uint32, valuesA []float32, indicesB []uint32, valuesB []float32) float32 {

@@ -1,6 +1,7 @@
 package collection
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -203,16 +204,18 @@ func (c *Collection) saveSchema() error {
 }
 
 func (c *Collection) replayWAL() error {
-	data, err := os.ReadFile(filepath.Join(c.path, "wal.log"))
+	f, err := os.Open(filepath.Join(c.path, "wal.log"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -222,7 +225,8 @@ func (c *Collection) replayWAL() error {
 		}
 		c.replayEntry(entry)
 	}
-	return nil
+	return scanner.Err()
+
 }
 
 func (c *Collection) replayEntry(entry wal.LogEntry) {
@@ -619,15 +623,16 @@ func (c *Collection) DeleteByFilter(filter string) status.Status {
 	defer c.mu.Unlock()
 
 	var toDelete []string
+	fn := compileFilter(filter)
 	if c.segManager != nil {
 		for _, d := range c.segManager.AllDocs() {
-			if matchFilter(d, filter) {
+			if fn(d) {
 				toDelete = append(toDelete, d.ID)
 			}
 		}
 	} else {
 		for _, d := range c.docs {
-			if matchFilter(d, filter) {
+			if fn(d) {
 				toDelete = append(toDelete, d.ID)
 			}
 		}
@@ -1103,6 +1108,8 @@ func (c *Collection) Optimize(opts *OptimizeOptions) status.Status {
 	for _, idx := range c.indexes {
 		idx.Close()
 	}
+	allDocs := c.allDocs()
+
 	c.indexes = make(map[string]Index)
 	for _, field := range c.schema.VectorFields() {
 		idx, err := createIndex(field)
@@ -1111,7 +1118,6 @@ func (c *Collection) Optimize(opts *OptimizeOptions) status.Status {
 		}
 		c.indexes[field.Name] = idx
 
-		allDocs := c.allDocs()
 		for _, d := range allDocs {
 			v, ok := d.Vector(field.Name)
 			if ok && v.Float32s != nil {
@@ -1126,7 +1132,6 @@ func (c *Collection) Optimize(opts *OptimizeOptions) status.Status {
 		ftsIdx := fts.NewFTSIndex(tokenizer)
 		c.ftsIndexes[field.Name] = ftsIdx
 
-		allDocs := c.allDocs()
 		for _, d := range allDocs {
 			if fv, ok := d.Field(field.Name); ok && !fv.Null {
 				ftsIdx.Index(d.DocID, fv.StringVal)
@@ -1139,7 +1144,6 @@ func (c *Collection) Optimize(opts *OptimizeOptions) status.Status {
 		invIdx := invert.NewInvertIndex()
 		c.invertIndexes[field.Name] = invIdx
 
-		allDocs := c.allDocs()
 		for _, d := range allDocs {
 			if fv, ok := d.Field(field.Name); ok && !fv.Null && fv.StringVal != "" {
 				invIdx.Add(d.DocID, fv.StringVal)

@@ -258,9 +258,7 @@ func (idx *HNSWRabitqIndex) Delete(pk string) bool {
 				idx.enterPoint--
 			}
 
-			if idx.maxLevel >= len(idx.nodeLevel) {
-				idx.maxLevel = len(idx.nodeLevel) - 1
-			}
+
 			for idx.maxLevel >= 0 {
 				has := false
 				for _, l := range idx.nodeLevel {

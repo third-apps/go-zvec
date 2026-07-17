@@ -45,15 +45,8 @@ func (h *maxHeap) Pop() interface{} {
 	return x
 }
 
-type hnswItem struct {
-	docID  uint64
-	pk     string
-	vector []float32
-}
-
 type HNSWIndex struct {
 	mu             sync.RWMutex
-	items          []hnswItem
 	vectors        [][]float32
 	pks            []string
 	dimension      int
@@ -255,9 +248,7 @@ func (idx *HNSWIndex) Delete(pk string) bool {
 				idx.enterPoint--
 			}
 
-			if idx.maxLevel >= len(idx.nodeLevel) {
-				idx.maxLevel = len(idx.nodeLevel) - 1
-			}
+
 			for idx.maxLevel >= 0 {
 				has := false
 				for _, l := range idx.nodeLevel {
