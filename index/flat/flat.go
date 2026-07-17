@@ -38,9 +38,11 @@ type FlatIndex struct {
 	data       []float32
 	pks        []string
 	count      int
+	liveCount  int
 	dimension  int
 	metricType types.MetricType
 	distFn     metric.DistanceFunc
+	deleted    []bool
 }
 
 func NewFlatIndex(dimension int, metricType types.MetricType) *FlatIndex {
@@ -77,7 +79,9 @@ func (idx *FlatIndex) Add(vector []float32, pk string) uint64 {
 	}
 
 	idx.pks = append(idx.pks, pk)
+	idx.deleted = append(idx.deleted, false)
 	idx.count++
+	idx.liveCount++
 	return docID
 }
 
@@ -102,6 +106,9 @@ func (idx *FlatIndex) Search(query []float32, topK int) []SearchResult {
 	h := make(flatMaxHeap, 0, topK)
 	dim := idx.dimension
 	for i := 0; i < idx.count; i++ {
+		if idx.deleted[i] {
+			continue
+		}
 		offset := i * dim
 		d := idx.distFn(q, idx.data[offset:offset+dim])
 		if h.Len() < topK {
@@ -143,7 +150,7 @@ func (idx *FlatIndex) SearchWithFilter(query []float32, topK int,
 	h := make(flatMaxHeap, 0, topK)
 	dim := idx.dimension
 	for i := 0; i < idx.count; i++ {
-		if !filterFn(idx.pks[i]) {
+		if idx.deleted[i] || !filterFn(idx.pks[i]) {
 			continue
 		}
 		offset := i * dim
@@ -177,14 +184,9 @@ func (idx *FlatIndex) Delete(pk string) bool {
 	defer idx.mu.Unlock()
 
 	for i, p := range idx.pks {
-		if p == pk {
-			dim := idx.dimension
-			srcOffset := (i + 1) * dim
-			dstOffset := i * dim
-			copy(idx.data[dstOffset:], idx.data[srcOffset:])
-			idx.data = idx.data[:len(idx.data)-dim]
-			idx.pks = append(idx.pks[:i], idx.pks[i+1:]...)
-			idx.count--
+		if p == pk && !idx.deleted[i] {
+			idx.deleted[i] = true
+			idx.liveCount--
 			return true
 		}
 	}
@@ -195,7 +197,7 @@ func (idx *FlatIndex) Size() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	return idx.count
+	return idx.liveCount
 }
 
 func (idx *FlatIndex) Dimension() int {

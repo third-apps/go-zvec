@@ -54,11 +54,13 @@ type VamanaIndex struct {
 	alpha          float32
 	saturateGraph  bool
 
-	docs       [][]float32
-	pks        []string
-	graph      [][]int
-	rng        *rand.Rand
-	entryPoint int
+	docs        [][]float32
+	pks         []string
+	graph       [][]int
+	rng         *rand.Rand
+	entryPoint  int
+	deleted     []bool
+	liveCount   int
 
 	visitedPool sync.Pool
 }
@@ -101,6 +103,8 @@ func (idx *VamanaIndex) Add(vector []float32, pk string) uint64 {
 	idx.docs = append(idx.docs, v)
 	idx.pks = append(idx.pks, pk)
 	idx.graph = append(idx.graph, []int{})
+	idx.deleted = append(idx.deleted, false)
+	idx.liveCount++
 
 	if idx.entryPoint < 0 {
 		idx.entryPoint = 0
@@ -145,14 +149,17 @@ func (idx *VamanaIndex) SearchWithListSize(query []float32, topK, searchListSize
 		topK = len(candidates)
 	}
 
-	results := make([]flat.SearchResult, topK)
-	for i := 0; i < topK; i++ {
+	results := make([]flat.SearchResult, 0, topK)
+	for i := 0; i < len(candidates) && len(results) < topK; i++ {
 		c := candidates[i]
-		results[i] = flat.SearchResult{
+		if idx.deleted[c.id] {
+			continue
+		}
+		results = append(results, flat.SearchResult{
 			DocID: uint64(c.id),
 			Score: 1.0 / (1.0 + c.dist),
 			PK:    idx.pks[c.id],
-		}
+		})
 	}
 	return results
 }
@@ -195,30 +202,9 @@ func (idx *VamanaIndex) Delete(pk string) bool {
 	defer idx.mu.Unlock()
 
 	for i, p := range idx.pks {
-		if p == pk {
-			idx.docs = append(idx.docs[:i], idx.docs[i+1:]...)
-			idx.pks = append(idx.pks[:i], idx.pks[i+1:]...)
-			idx.graph = append(idx.graph[:i], idx.graph[i+1:]...)
-			for j := range idx.graph {
-				for k := len(idx.graph[j]) - 1; k >= 0; k-- {
-					if idx.graph[j][k] == i || idx.graph[j][k] > i {
-						if idx.graph[j][k] > i {
-							idx.graph[j][k]--
-						} else {
-							idx.graph[j] = append(idx.graph[j][:k], idx.graph[j][k+1:]...)
-						}
-					}
-				}
-			}
-			if idx.entryPoint == i {
-				if len(idx.docs) > 0 {
-					idx.entryPoint = 0
-				} else {
-					idx.entryPoint = -1
-				}
-			} else if idx.entryPoint > i {
-				idx.entryPoint--
-			}
+		if p == pk && !idx.deleted[i] {
+			idx.deleted[i] = true
+			idx.liveCount--
 			return true
 		}
 	}
@@ -229,7 +215,7 @@ func (idx *VamanaIndex) Size() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	return len(idx.docs)
+	return idx.liveCount
 }
 
 func (idx *VamanaIndex) Dimension() int {

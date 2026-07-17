@@ -28,6 +28,8 @@ type IVFIndex struct {
 	inverted    [][]int
 	trained     bool
 	trainOnce   sync.Once
+	deleted     []bool
+	liveCount   int
 }
 
 func NewIVFIndex(dimension int, metricType types.MetricType, nList, nIters int) *IVFIndex {
@@ -73,6 +75,8 @@ func (idx *IVFIndex) Add(vector []float32, pk string) uint64 {
 	docID := uint64(len(idx.docs))
 	idx.docs = append(idx.docs, v)
 	idx.pks = append(idx.pks, pk)
+	idx.deleted = append(idx.deleted, false)
+	idx.liveCount++
 
 	if idx.trained {
 		nearest := idx.findNearestCentroid(v)
@@ -180,6 +184,9 @@ func (idx *IVFIndex) Search(query []float32, topK int) []flat.SearchResult {
 		clusterID := centroidDists[p].idx
 		for _, docIdx := range idx.inverted[clusterID] {
 			if _, ok := seen[docIdx]; ok {
+				continue
+			}
+			if idx.deleted[docIdx] {
 				continue
 			}
 			seen[docIdx] = struct{}{}
@@ -304,31 +311,9 @@ func (idx *IVFIndex) Delete(pk string) bool {
 	defer idx.mu.Unlock()
 
 	for i, p := range idx.pks {
-		if p == pk {
-			if idx.trained && i < len(idx.assignments) {
-				clusterID := idx.assignments[i]
-				inv := idx.inverted[clusterID]
-				for j, docIdx := range inv {
-					if docIdx == i {
-						idx.inverted[clusterID] = append(inv[:j], inv[j+1:]...)
-						break
-					}
-				}
-			}
-
-			idx.docs = append(idx.docs[:i], idx.docs[i+1:]...)
-			idx.pks = append(idx.pks[:i], idx.pks[i+1:]...)
-			idx.assignments = append(idx.assignments[:i], idx.assignments[i+1:]...)
-
-			if idx.trained {
-				for c := range idx.inverted {
-					for j, docIdx := range idx.inverted[c] {
-						if docIdx > i {
-							idx.inverted[c][j] = docIdx - 1
-						}
-					}
-				}
-			}
+		if p == pk && !idx.deleted[i] {
+			idx.deleted[i] = true
+			idx.liveCount--
 			return true
 		}
 	}
@@ -338,7 +323,7 @@ func (idx *IVFIndex) Delete(pk string) bool {
 func (idx *IVFIndex) Size() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return len(idx.docs)
+	return idx.liveCount
 }
 
 func (idx *IVFIndex) Dimension() int {

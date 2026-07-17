@@ -35,6 +35,8 @@ type HNSWIndex struct {
 	maxLevel     int
 	rng          *rand.Rand
 	visitedPool  sync.Pool
+	deleted      []bool
+	liveCount    int
 }
 
 func NewHNSWIndex(dimension int, metricType types.MetricType, m, efConstruction int) *HNSWIndex {
@@ -83,6 +85,8 @@ func (idx *HNSWIndex) Add(vector []float32, pk string) uint64 {
 	idx.vectors = append(idx.vectors, v)
 	idx.pks = append(idx.pks, pk)
 	idx.adjList = append(idx.adjList, []uint64{})
+	idx.deleted = append(idx.deleted, false)
+	idx.liveCount++
 
 	level := idx.randomLevel()
 	idx.nodeLevel = append(idx.nodeLevel, level)
@@ -155,14 +159,17 @@ func (idx *HNSWIndex) searchLocked(query []float32, topK int) []flat.SearchResul
 		topK = len(candidates)
 	}
 
-	results := make([]flat.SearchResult, topK)
-	for i := 0; i < topK; i++ {
+	results := make([]flat.SearchResult, 0, topK)
+	for i := 0; i < len(candidates) && len(results) < topK; i++ {
 		n := candidates[i]
-		results[i] = flat.SearchResult{
+		if idx.deleted[n.id] {
+			continue
+		}
+		results = append(results, flat.SearchResult{
 			DocID: n.id,
 			Score: 1.0 / (1.0 + n.dist),
 			PK:    idx.pks[n.id],
-		}
+		})
 	}
 	return results
 }
@@ -190,52 +197,9 @@ func (idx *HNSWIndex) Delete(pk string) bool {
 	defer idx.mu.Unlock()
 
 	for i, p := range idx.pks {
-		if p == pk {
-			idx.vectors = append(idx.vectors[:i], idx.vectors[i+1:]...)
-			idx.pks = append(idx.pks[:i], idx.pks[i+1:]...)
-			idx.adjList = append(idx.adjList[:i], idx.adjList[i+1:]...)
-			idx.nodeLevel = append(idx.nodeLevel[:i], idx.nodeLevel[i+1:]...)
-
-			for j := range idx.adjList {
-				newList := make([]uint64, 0, len(idx.adjList[j]))
-				for _, nb := range idx.adjList[j] {
-					if nb == uint64(i) {
-						continue
-					}
-					if nb > uint64(i) {
-						newList = append(newList, nb-1)
-					} else {
-						newList = append(newList, nb)
-					}
-				}
-				idx.adjList[j] = newList
-			}
-
-			if idx.enterPoint == i {
-				if len(idx.vectors) > 0 {
-					idx.enterPoint = 0
-				} else {
-					idx.enterPoint = -1
-					idx.maxLevel = -1
-				}
-			} else if idx.enterPoint > i {
-				idx.enterPoint--
-			}
-
-			for idx.maxLevel >= 0 {
-				has := false
-				for _, l := range idx.nodeLevel {
-					if l >= idx.maxLevel {
-						has = true
-						break
-					}
-				}
-				if !has {
-					idx.maxLevel--
-				} else {
-					break
-				}
-			}
+		if p == pk && !idx.deleted[i] {
+			idx.deleted[i] = true
+			idx.liveCount--
 			return true
 		}
 	}
@@ -246,7 +210,7 @@ func (idx *HNSWIndex) Size() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	return len(idx.vectors)
+	return idx.liveCount
 }
 
 func (idx *HNSWIndex) Dimension() int {

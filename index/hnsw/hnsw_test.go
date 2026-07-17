@@ -137,12 +137,9 @@ func TestHNSWDeleteAll(t *testing.T) {
 	if idx.Size() != 0 {
 		t.Fatal("expected size 0")
 	}
-	if idx.enterPoint != -1 {
-		t.Fatal("expected enterPoint -1 after deleting all")
-	}
 	results := idx.Search([]float32{1, 0}, 5)
-	if results != nil {
-		t.Fatal("expected nil for empty index")
+	if len(results) != 0 {
+		t.Fatal("expected empty results for tombstone-deleted index")
 	}
 }
 

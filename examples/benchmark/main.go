@@ -20,9 +20,9 @@ import (
 
 const (
 	dim       = 128
-	numDocs   = 50000
+	numDocs   = 100000
 	topK      = 10
-	numQuery  = 100
+	numQuery  = 10000
 	batchSize = 5000
 )
 
@@ -42,16 +42,12 @@ func main() {
 	vectors := generateVectors(numDocs, dim)
 	queryVecs := generateVectors(numQuery, dim)
 
-
 	benchFlat(vectors, queryVecs)
 	benchIVF(vectors, queryVecs)
 	benchHNSW(vectors, queryVecs)
 	benchVamana(vectors, queryVecs)
 	benchHNSWRabitq(vectors, queryVecs)
 	benchConcurrentSearch(vectors, queryVecs)
-
-
-
 
 	fmt.Println("\n============================================")
 	fmt.Println("  基准测试完成 / Benchmark Complete")
