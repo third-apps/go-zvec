@@ -102,10 +102,10 @@ go run ./examples/benchmark/
 
 | 索引类型 | 插入速度 | 搜索 QPS | 平均延迟 |
 |---|---|---|---|
-| **Flat** | ~107K docs/s | ~130 | ~7.7ms |
-| **IVF** (nList=16) | ~117K docs/s | ~24 | ~42ms |
-| **HNSW** (M=16, efConstruction=200) | ~529 docs/s | ~377 | ~2.7ms |
-| **Vamana** (maxDegree=16, alpha=1.2) | ~1.3K docs/s | ~2,076 | ~0.5ms |
+| **Flat** | ~119K docs/s | ~210 | ~4.8ms |
+| **IVF** (nList=16) | ~129K docs/s | ~31 | ~32ms |
+| **HNSW** (M=16, efConstruction=200) | ~820 docs/s | ~545 | ~1.8ms |
+| **Vamana** (maxDegree=16, alpha=1.2) | ~2.7K docs/s | ~4,143 | ~0.2ms |
 
 ### 参考结果 / Reference Results (10K vectors)
 

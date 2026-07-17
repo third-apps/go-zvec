@@ -1,6 +1,7 @@
 package vamana
 
 import (
+	"container/heap"
 	"math/rand"
 	"sort"
 	"sync"
@@ -9,6 +10,39 @@ import (
 	"github.com/third-apps/go-zvec/metric"
 	"github.com/third-apps/go-zvec/types"
 )
+
+type vNeighbor struct {
+	id   int
+	dist float32
+}
+
+type vMinHeap []vNeighbor
+
+func (h vMinHeap) Len() int            { return len(h) }
+func (h vMinHeap) Less(i, j int) bool  { return h[i].dist < h[j].dist }
+func (h vMinHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *vMinHeap) Push(x interface{}) { *h = append(*h, x.(vNeighbor)) }
+func (h *vMinHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+type vMaxHeap []vNeighbor
+
+func (h vMaxHeap) Len() int            { return len(h) }
+func (h vMaxHeap) Less(i, j int) bool  { return h[i].dist > h[j].dist }
+func (h vMaxHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *vMaxHeap) Push(x interface{}) { *h = append(*h, x.(vNeighbor)) }
+func (h *vMaxHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
 
 type VamanaIndex struct {
 	mu             sync.RWMutex
@@ -68,7 +102,6 @@ func (idx *VamanaIndex) Add(vector []float32, pk string) uint64 {
 	candidates := idx.greedySearch(v, idx.entryPoint, idx.searchListSize)
 	idx.pruneAndAdd(int(docID), candidates)
 
-
 	if idx.saturateGraph {
 		idx.ensureDegree(int(docID))
 	}
@@ -91,10 +124,6 @@ func (idx *VamanaIndex) Search(query []float32, topK int) []flat.SearchResult {
 	}
 
 	candidates := idx.greedySearch(q, idx.entryPoint, idx.searchListSize)
-
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].dist < candidates[j].dist
-	})
 
 	if topK > len(candidates) {
 		topK = len(candidates)
@@ -128,10 +157,6 @@ func (idx *VamanaIndex) SearchWithFilter(query []float32, topK int,
 	}
 
 	all := idx.greedySearch(q, idx.entryPoint, len(idx.docs))
-
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].dist < all[j].dist
-	})
 
 	var results []flat.SearchResult
 	for _, c := range all {
@@ -199,58 +224,55 @@ func (idx *VamanaIndex) Close() error {
 	return nil
 }
 
-type vNeighbor struct {
-	id   int
-	dist float32
-}
-
 func (idx *VamanaIndex) greedySearch(query []float32, start int, L int) []vNeighbor {
-	visited := make(map[int]struct{})
-	var candidates []vNeighbor
-	var results []vNeighbor
+	n := len(idx.docs)
+	visited := make([]byte, n)
+	visited[start] = 1
 
 	startDist := idx.distFn(query, idx.docs[start])
 	startN := vNeighbor{id: start, dist: startDist}
-	candidates = append(candidates, startN)
-	results = append(results, startN)
-	visited[start] = struct{}{}
 
-	for len(candidates) > 0 {
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].dist < candidates[j].dist
-		})
+	candidates := &vMinHeap{startN}
+	heap.Init(candidates)
 
-		closest := candidates[0]
-		farthest := results[len(results)-1]
+	result := &vMaxHeap{startN}
+	heap.Init(result)
 
-		if closest.dist > farthest.dist {
+	for candidates.Len() > 0 {
+		closest := (*candidates)[0]
+
+		if result.Len() >= L && closest.dist > (*result)[0].dist {
 			break
 		}
 
-		candidates = candidates[1:]
+		heap.Pop(candidates)
 
 		for _, nb := range idx.graph[closest.id] {
-			if _, seen := visited[nb]; seen {
+			if visited[nb] != 0 {
 				continue
 			}
-			visited[nb] = struct{}{}
+			visited[nb] = 1
 			dist := idx.distFn(query, idx.docs[nb])
 			nn := vNeighbor{id: nb, dist: dist}
 
-			if len(candidates) < L || dist < candidates[len(candidates)-1].dist {
-				candidates = append(candidates, nn)
-				results = append(results, nn)
-				sort.Slice(results, func(i, j int) bool {
-					return results[i].dist < results[j].dist
-				})
-				if len(results) > L {
-					results = results[:L]
+			if result.Len() < L || dist < (*result)[0].dist {
+				heap.Push(candidates, nn)
+				heap.Push(result, nn)
+				if result.Len() > L {
+					heap.Pop(result)
 				}
 			}
 		}
 	}
 
-	return results
+	sorted := make([]vNeighbor, result.Len())
+	for i, n := range *result {
+		sorted[i] = n
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].dist < sorted[j].dist
+	})
+	return sorted
 }
 
 func (idx *VamanaIndex) pruneAndAdd(newID int, candidates []vNeighbor) {

@@ -1,7 +1,6 @@
 package hnsw
 
 import (
-	"container/heap"
 	"math"
 	"math/rand"
 	"sort"
@@ -15,34 +14,6 @@ import (
 type neighbor struct {
 	id   uint64
 	dist float32
-}
-
-type minHeap []neighbor
-
-func (h minHeap) Len() int            { return len(h) }
-func (h minHeap) Less(i, j int) bool  { return h[i].dist < h[j].dist }
-func (h minHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *minHeap) Push(x interface{}) { *h = append(*h, x.(neighbor)) }
-func (h *minHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
-}
-
-type maxHeap []neighbor
-
-func (h maxHeap) Len() int            { return len(h) }
-func (h maxHeap) Less(i, j int) bool  { return h[i].dist > h[j].dist }
-func (h maxHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *maxHeap) Push(x interface{}) { *h = append(*h, x.(neighbor)) }
-func (h *maxHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
 }
 
 type HNSWIndex struct {
@@ -173,10 +144,6 @@ func (idx *HNSWIndex) searchLocked(query []float32, topK int) []flat.SearchResul
 
 	candidates := idx.searchLayer(q, currObj, float64(idx.ef), 0)
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].dist < candidates[j].dist
-	})
-
 	if topK > len(candidates) {
 		topK = len(candidates)
 	}
@@ -248,7 +215,6 @@ func (idx *HNSWIndex) Delete(pk string) bool {
 				idx.enterPoint--
 			}
 
-
 			for idx.maxLevel >= 0 {
 				has := false
 				for _, l := range idx.nodeLevel {
@@ -285,51 +251,56 @@ func (idx *HNSWIndex) Close() error {
 }
 
 func (idx *HNSWIndex) searchLayer(queryVec []float32, entryID uint64, ef float64, layer int) []neighbor {
-	visited := make(map[uint64]struct{})
-	var candidates minHeap
-	var farthest maxHeap
+	n := len(idx.vectors)
+	visited := make([]byte, n)
+	visited[entryID] = 1
 
 	entryDist := idx.distFn(queryVec, idx.vectors[entryID])
-	en := neighbor{id: entryID, dist: entryDist}
 
-	heap.Push(&candidates, en)
-	heap.Push(&farthest, en)
-	visited[entryID] = struct{}{}
+	pool := make([]neighbor, 0, int(ef)+1)
+	pool = append(pool, neighbor{id: entryID, dist: entryDist})
 
-	for candidates.Len() > 0 {
-		closest := candidates[0]
-		farthestDist := farthest[0].dist
+	candidateSet := make([]neighbor, 0, int(ef)+1)
+	candidateSet = append(candidateSet, neighbor{id: entryID, dist: entryDist})
 
-		if closest.dist > farthestDist {
+	for len(candidateSet) > 0 {
+		closest := candidateSet[0]
+		copy(candidateSet, candidateSet[1:])
+		candidateSet = candidateSet[:len(candidateSet)-1]
+
+		farthestDist := pool[len(pool)-1].dist
+		if closest.dist > farthestDist && len(pool) >= int(ef) {
 			break
 		}
 
-		cn := heap.Pop(&candidates).(neighbor)
-
-		for _, neighborID := range idx.adjList[cn.id] {
-			if _, seen := visited[neighborID]; seen {
+		for _, neighborID := range idx.adjList[closest.id] {
+			if visited[neighborID] != 0 {
 				continue
 			}
-			visited[neighborID] = struct{}{}
+			visited[neighborID] = 1
 
 			dist := idx.distFn(queryVec, idx.vectors[neighborID])
 			nn := neighbor{id: neighborID, dist: dist}
 
-			if farthest.Len() < int(ef) || dist < farthest[0].dist {
-				heap.Push(&candidates, nn)
-				heap.Push(&farthest, nn)
-				if farthest.Len() > int(ef) {
-					heap.Pop(&farthest)
+			if len(pool) < int(ef) || dist < pool[len(pool)-1].dist {
+				pool = insertSorted(pool, nn)
+				if len(pool) > int(ef) {
+					pool = pool[:int(ef)]
 				}
+				candidateSet = insertSorted(candidateSet, nn)
 			}
 		}
 	}
 
-	result := make([]neighbor, farthest.Len())
-	for i, n := range farthest {
-		result[i] = n
-	}
-	return result
+	return pool
+}
+
+func insertSorted(s []neighbor, n neighbor) []neighbor {
+	i := sort.Search(len(s), func(j int) bool { return s[j].dist > n.dist })
+	s = append(s, neighbor{})
+	copy(s[i+1:], s[i:])
+	s[i] = n
+	return s
 }
 
 func (idx *HNSWIndex) connectNodes(a, b uint64, layer int) {

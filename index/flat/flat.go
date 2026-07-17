@@ -35,8 +35,9 @@ func (h *flatMaxHeap) Pop() interface{} {
 
 type FlatIndex struct {
 	mu         sync.RWMutex
-	vectors    [][]float32
+	data       []float32
 	pks        []string
+	count      int
 	dimension  int
 	metricType types.MetricType
 	distFn     metric.DistanceFunc
@@ -47,6 +48,8 @@ func NewFlatIndex(dimension int, metricType types.MetricType) *FlatIndex {
 		dimension:  dimension,
 		metricType: metricType,
 		distFn:     metric.GetDistanceFunc(metricType),
+		data:       make([]float32, 0, 1024*dimension),
+		pks:        make([]string, 0, 1024),
 	}
 }
 
@@ -54,14 +57,27 @@ func (idx *FlatIndex) Add(vector []float32, pk string) uint64 {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	docID := uint64(len(idx.vectors))
-	v := make([]float32, len(vector))
-	copy(v, vector)
-	if idx.metricType == types.MetricTypeCosine {
-		v = metric.Normalize(v)
+	docID := uint64(idx.count)
+	offset := len(idx.data)
+	needed := offset + idx.dimension
+	if cap(idx.data) < needed {
+		newCap := cap(idx.data) * 2
+		if newCap < needed {
+			newCap = needed
+		}
+		newData := make([]float32, len(idx.data), newCap)
+		copy(newData, idx.data)
+		idx.data = newData
 	}
-	idx.vectors = append(idx.vectors, v)
+	idx.data = idx.data[:needed]
+	copy(idx.data[offset:], vector[:idx.dimension])
+
+	if idx.metricType == types.MetricTypeCosine {
+		metric.NormalizeInPlace(idx.data[offset : offset+idx.dimension])
+	}
+
 	idx.pks = append(idx.pks, pk)
+	idx.count++
 	return docID
 }
 
@@ -69,23 +85,25 @@ func (idx *FlatIndex) Search(query []float32, topK int) []SearchResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	if len(idx.vectors) == 0 {
+	if idx.count == 0 {
 		return nil
 	}
 
-	q := make([]float32, len(query))
-	copy(q, query)
+	q := make([]float32, idx.dimension)
+	copy(q, query[:idx.dimension])
 	if idx.metricType == types.MetricTypeCosine {
-		q = metric.Normalize(q)
+		metric.NormalizeInPlace(q)
 	}
 
-	if topK > len(idx.vectors) {
-		topK = len(idx.vectors)
+	if topK > idx.count {
+		topK = idx.count
 	}
 
 	h := make(flatMaxHeap, 0, topK)
-	for i, v := range idx.vectors {
-		d := idx.distFn(q, v)
+	dim := idx.dimension
+	for i := 0; i < idx.count; i++ {
+		offset := i * dim
+		d := idx.distFn(q, idx.data[offset:offset+dim])
 		if h.Len() < topK {
 			heap.Push(&h, flatMaxHeapItem{dist: d, index: i})
 		} else if d < h[0].dist {
@@ -116,18 +134,20 @@ func (idx *FlatIndex) SearchWithFilter(query []float32, topK int,
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	q := make([]float32, len(query))
-	copy(q, query)
+	q := make([]float32, idx.dimension)
+	copy(q, query[:idx.dimension])
 	if idx.metricType == types.MetricTypeCosine {
-		q = metric.Normalize(q)
+		metric.NormalizeInPlace(q)
 	}
 
 	h := make(flatMaxHeap, 0, topK)
-	for i, v := range idx.vectors {
+	dim := idx.dimension
+	for i := 0; i < idx.count; i++ {
 		if !filterFn(idx.pks[i]) {
 			continue
 		}
-		d := idx.distFn(q, v)
+		offset := i * dim
+		d := idx.distFn(q, idx.data[offset:offset+dim])
 		if h.Len() < topK {
 			heap.Push(&h, flatMaxHeapItem{dist: d, index: i})
 		} else if d < h[0].dist {
@@ -158,8 +178,13 @@ func (idx *FlatIndex) Delete(pk string) bool {
 
 	for i, p := range idx.pks {
 		if p == pk {
-			idx.vectors = append(idx.vectors[:i], idx.vectors[i+1:]...)
+			dim := idx.dimension
+			srcOffset := (i + 1) * dim
+			dstOffset := i * dim
+			copy(idx.data[dstOffset:], idx.data[srcOffset:])
+			idx.data = idx.data[:len(idx.data)-dim]
 			idx.pks = append(idx.pks[:i], idx.pks[i+1:]...)
+			idx.count--
 			return true
 		}
 	}
@@ -170,7 +195,7 @@ func (idx *FlatIndex) Size() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	return len(idx.vectors)
+	return idx.count
 }
 
 func (idx *FlatIndex) Dimension() int {

@@ -25,8 +25,19 @@ func GetDistanceFunc(metric types.MetricType) DistanceFunc {
 
 func L2Squared(a, b []float32) float32 {
 	var sum float32
-	n := min(len(a), len(b))
-	for i := 0; i < n; i++ {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for ; i+3 < n; i += 4 {
+		d0 := a[i] - b[i]
+		d1 := a[i+1] - b[i+1]
+		d2 := a[i+2] - b[i+2]
+		d3 := a[i+3] - b[i+3]
+		sum += d0*d0 + d1*d1 + d2*d2 + d3*d3
+	}
+	for ; i < n; i++ {
 		diff := a[i] - b[i]
 		sum += diff * diff
 	}
@@ -39,8 +50,15 @@ func L2(a, b []float32) float32 {
 
 func InnerProduct(a, b []float32) float32 {
 	var sum float32
-	n := min(len(a), len(b))
-	for i := 0; i < n; i++ {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for ; i+3 < n; i += 4 {
+		sum += a[i]*b[i] + a[i+1]*b[i+1] + a[i+2]*b[i+2] + a[i+3]*b[i+3]
+	}
+	for ; i < n; i++ {
 		sum += a[i] * b[i]
 	}
 	return 1.0 - sum
@@ -48,7 +66,10 @@ func InnerProduct(a, b []float32) float32 {
 
 func CosineDistance(a, b []float32) float32 {
 	var dot, normA, normB float32
-	n := min(len(a), len(b))
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
 	for i := 0; i < n; i++ {
 		dot += a[i] * b[i]
 		normA += a[i] * a[i]
@@ -62,7 +83,10 @@ func CosineDistance(a, b []float32) float32 {
 
 func CosineSimilarity(a, b []float32) float32 {
 	var dot, normA, normB float32
-	n := min(len(a), len(b))
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
 	for i := 0; i < n; i++ {
 		dot += a[i] * b[i]
 		normA += a[i] * a[i]
