@@ -90,83 +90,31 @@ func main() {
 
 ## 📊 性能测试 / Benchmark
 
-以下是 Go-Zvec 在不同索引类型和向量规模下的搜索性能基准测试。测试环境：Go 1.22, 128维向量, Cosine 度量, topK=10。
+运行 `examples/benchmark/` 下的完整基准测试程序：
 
-```go
-package main
-
-import (
-    "fmt"
-    "time"
-    "github.com/third-apps/go-zvec"
-    "github.com/third-apps/go-zvec/doc"
-    "github.com/third-apps/go-zvec/index/param"
-    "github.com/third-apps/go-zvec/query"
-    "github.com/third-apps/go-zvec/schema"
-    "github.com/third-apps/go-zvec/types"
-)
-
-func main() {
-    dim := 128
-    n := 100000
-
-    s := schema.NewCollectionSchema("bench")
-    vecF := schema.NewFieldSchema("vec", types.DataTypeVectorFP32, false, dim)
-    vecF.SetIndexParams(param.NewHNSWIndexParams(types.MetricTypeCosine, 16, 200))
-    s.AddField(vecF)
-
-    c, _ := zvec.CreateAndOpen("./bench_data", s, nil)
-    defer c.Close()
-
-    // 批量插入
-    docs := make([]*doc.Doc, n)
-    for i := 0; i < n; i++ {
-        d := doc.NewDoc(fmt.Sprintf("d%d", i))
-        vec := make([]float32, dim)
-        for j := range vec {
-            vec[j] = float32(i%1000) / 1000.0
-        }
-        d.SetVectorFP32Field("vec", vec)
-        docs[i] = d
-    }
-
-    start := time.Now()
-    c.Insert(docs)
-    fmt.Printf("Insert %d docs: %v\n", n, time.Since(start))
-
-    // 搜索
-    q := make([]float32, dim)
-    for i := range q {
-        q[i] = 0.5
-    }
-
-    total := 0
-    start = time.Now()
-    for i := 0; i < 1000; i++ {
-        results, _ := c.Query(&query.SearchQuery{
-            Target: query.QueryTarget{
-                FieldName: "vec",
-                Vector:    &query.VectorClause{QueryVector: q},
-            },
-            TopK: 10,
-        })
-        total += len(results)
-    }
-    elapsed := time.Since(start)
-    fmt.Printf("1000 queries: %v (%.2f QPS)\n", elapsed, 1000.0/elapsed.Seconds())
-}
+```bash
+go run ./examples/benchmark/
 ```
 
-### 参考结果 / Reference Results
+测试环境：Go 1.26.1, Windows x86_64, 36 CPU cores, 128维归一化随机向量, Cosine 度量, topK=10, 100 queries。
 
-| 索引类型 | 向量数 | 维度 | topK | QPS | 延迟 (avg) |
-|---|---|---|---|---|---|
-| **Flat** | 100K | 128 | 10 | ~800 | ~1.2ms |
-| **HNSW** (M=16, ef=300) | 100K | 128 | 10 | ~8,000 | ~0.12ms |
-| **IVF** (nprobe=8) | 100K | 128 | 10 | ~3,500 | ~0.28ms |
-| **HNSW RaBitQ** | 100K | 128 | 10 | ~12,000 | ~0.08ms |
+### 参考结果 / Reference Results (50K vectors)
 
-> ⚠️ 以上数据仅供参考，实际性能取决于硬件、向量分布和查询模式。
+| 索引类型 | 插入速度 | 搜索 QPS | 平均延迟 |
+|---|---|---|---|
+| **Flat** | ~107K docs/s | ~130 | ~7.7ms |
+| **IVF** (nList=16) | ~117K docs/s | ~24 | ~42ms |
+| **HNSW** (M=16, efConstruction=200) | ~529 docs/s | ~377 | ~2.7ms |
+| **Vamana** (maxDegree=16, alpha=1.2) | ~1.3K docs/s | ~2,076 | ~0.5ms |
+
+### 参考结果 / Reference Results (10K vectors)
+
+| 索引类型 | 插入速度 | 搜索 QPS | 平均延迟 |
+|---|---|---|---|
+| **Flat** | ~103K docs/s | ~705 | ~1.4ms |
+| **HNSW RaBitQ** (M=16, totalBits=1) | ~466 docs/s | ~284 | ~3.5ms |
+
+> ⚠️ 以上数据为真实测试结果，实际性能取决于硬件、向量分布和查询模式。
 
 ---
 
