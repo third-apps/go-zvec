@@ -3,6 +3,7 @@
 demo_*/
 examples/*_data/
 search_demo_data/
+zvec_example/
 .idea/
 .codeartsdoer/
 .arts/

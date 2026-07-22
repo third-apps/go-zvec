@@ -75,15 +75,33 @@ func (s Status) GoError() error {
 	if s.OK() {
 		return nil
 	}
-	return &statusError{s}
+	return &statusError{Status: s}
+}
+
+func (s Status) GoErrorWithCause(cause error) error {
+	if s.OK() {
+		return nil
+	}
+	return &statusError{Status: s, cause: cause}
 }
 
 type statusError struct {
+	cause error
 	Status
 }
 
 func (e *statusError) Unwrap() error {
-	return nil
+	return e.cause
+}
+
+func (e *statusError) Error() string {
+	if e.Status.OK() {
+		return "OK"
+	}
+	if e.cause != nil {
+		return fmt.Sprintf("%s: %s: %v", e.Status.code, e.Status.message, e.cause)
+	}
+	return fmt.Sprintf("%s: %s", e.Status.code, e.Status.message)
 }
 
 func OKStatus() Status {
@@ -131,7 +149,7 @@ func NewUnknown(msg string) Status {
 }
 
 type Result[T any] struct {
-	value T
+	value  T
 	status Status
 }
 

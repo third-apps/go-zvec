@@ -21,6 +21,7 @@ func testSchema() *schema.CollectionSchema {
 	return s
 }
 
+// TestCreateAndOpen 验证 Collection 创建并打开后路径正确
 func TestCreateAndOpen(t *testing.T) {
 	path := "./test_zvec"
 	defer os.RemoveAll(path)
@@ -36,6 +37,7 @@ func TestCreateAndOpen(t *testing.T) {
 	}
 }
 
+// TestInsertAndQuery 验证 Collection 插入文档后向量搜索返回正确结果
 func TestInsertAndQuery(t *testing.T) {
 	path := "./test_zvec_insert"
 	defer os.RemoveAll(path)
@@ -75,6 +77,7 @@ func TestInsertAndQuery(t *testing.T) {
 	}
 }
 
+// TestUpsert 验证 Collection 更新插入文档后文档数不变
 func TestUpsert(t *testing.T) {
 	path := "./test_zvec_upsert"
 	defer os.RemoveAll(path)
@@ -98,6 +101,7 @@ func TestUpsert(t *testing.T) {
 	}
 }
 
+// TestDelete 验证 Collection 删除文档后文档数为0
 func TestDelete(t *testing.T) {
 	path := "./test_zvec_delete"
 	defer os.RemoveAll(path)
@@ -122,6 +126,7 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+// TestCreateIndex 验证 Collection 动态创建索引功能
 func TestCreateIndex(t *testing.T) {
 	path := "./test_zvec_create_idx"
 	defer os.RemoveAll(path)
@@ -140,6 +145,7 @@ func TestCreateIndex(t *testing.T) {
 	}
 }
 
+// TestFlush 验证 Collection 刷盘操作
 func TestFlush(t *testing.T) {
 	path := "./test_zvec_flush"
 	defer os.RemoveAll(path)
@@ -152,6 +158,7 @@ func TestFlush(t *testing.T) {
 	}
 }
 
+// TestFetch 验证 Collection 按 PK 获取文档功能
 func TestFetch(t *testing.T) {
 	path := "./test_zvec_fetch"
 	defer os.RemoveAll(path)

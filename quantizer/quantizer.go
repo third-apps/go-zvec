@@ -2,11 +2,12 @@ package quantizer
 
 import (
 	"encoding/binary"
-
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 
+	"github.com/third-apps/go-zvec/persist"
 	"github.com/third-apps/go-zvec/types"
 )
 
@@ -38,7 +39,22 @@ func (q *FP16Quantizer) Encode(vec []float32, dst []byte) []byte {
 	} else {
 		dst = dst[:needed]
 	}
-	for i, v := range vec {
+	i := 0
+	n := len(vec)
+	for ; i+3 < n; i += 4 {
+		for j := 0; j < 4; j++ {
+			v := vec[i+j]
+			if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+				v = 0
+			}
+			binary.LittleEndian.PutUint16(dst[(i+j)*2:], float32ToFloat16(v))
+		}
+	}
+	for ; i < n; i++ {
+		v := vec[i]
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			v = 0
+		}
 		binary.LittleEndian.PutUint16(dst[i*2:], float32ToFloat16(v))
 	}
 	return dst
@@ -51,7 +67,14 @@ func (q *FP16Quantizer) Decode(src []byte, dst []float32) []float32 {
 	} else {
 		dst = dst[:n]
 	}
-	for i := 0; i < n; i++ {
+	i := 0
+	for ; i+3 < n; i += 4 {
+		dst[i] = float16ToFloat32(binary.LittleEndian.Uint16(src[i*2:]))
+		dst[i+1] = float16ToFloat32(binary.LittleEndian.Uint16(src[(i+1)*2:]))
+		dst[i+2] = float16ToFloat32(binary.LittleEndian.Uint16(src[(i+2)*2:]))
+		dst[i+3] = float16ToFloat32(binary.LittleEndian.Uint16(src[(i+3)*2:]))
+	}
+	for ; i < n; i++ {
 		dst[i] = float16ToFloat32(binary.LittleEndian.Uint16(src[i*2:]))
 	}
 	return dst
@@ -125,13 +148,17 @@ func (q *Int8Quantizer) Encode(vec []float32, dst []byte) []byte {
 	}
 
 	for j := 0; j < q.dim && j < len(v); j++ {
+		val := v[j]
+		if math.IsNaN(float64(val)) || math.IsInf(float64(val), 0) {
+			val = 0
+		}
 		var s float32
 		if j < len(q.scale) && q.scale[j] != 0 {
 			s = q.scale[j]
 		} else {
 			s = 1.0
 		}
-		scaled := v[j] / s
+		scaled := val / s
 		if scaled > 1.0 {
 			scaled = 1.0
 		} else if scaled < -1.0 {
@@ -149,7 +176,14 @@ func (q *Int8Quantizer) Decode(src []byte, dst []float32) []float32 {
 	} else {
 		dst = dst[:n]
 	}
-	for j := 0; j < n; j++ {
+	j := 0
+	for ; j+3 < n && j+3 < len(q.scale); j += 4 {
+		dst[j] = float32(int8(src[j])) / 127.0 * q.scale[j]
+		dst[j+1] = float32(int8(src[j+1])) / 127.0 * q.scale[j+1]
+		dst[j+2] = float32(int8(src[j+2])) / 127.0 * q.scale[j+2]
+		dst[j+3] = float32(int8(src[j+3])) / 127.0 * q.scale[j+3]
+	}
+	for ; j < n; j++ {
 		dst[j] = float32(int8(src[j])) / 127.0
 		if j < len(q.scale) {
 			dst[j] *= q.scale[j]
@@ -231,13 +265,17 @@ func (q *Int4Quantizer) Encode(vec []float32, dst []byte) []byte {
 	for j := 0; j < q.dim; j++ {
 		var val float32
 		if j < len(v) {
+			raw := v[j]
+			if math.IsNaN(float64(raw)) || math.IsInf(float64(raw), 0) {
+				raw = 0
+			}
 			var s float32
 			if j < len(q.scale) && q.scale[j] != 0 {
 				s = q.scale[j]
 			} else {
 				s = 1.0
 			}
-			scaled := v[j] / s
+			scaled := raw / s
 			if scaled > 1.0 {
 				scaled = 1.0
 			} else if scaled < -1.0 {
@@ -281,6 +319,47 @@ func (q *Int4Quantizer) Decode(src []byte, dst []float32) []float32 {
 		dst = applyInverseRotation(dst, q.rotMatrix)
 	}
 	return dst
+}
+
+func (q *Int4Quantizer) SaveState(w io.Writer) error {
+	if err := persist.WriteFloat32Slice(w, q.scale); err != nil {
+		return err
+	}
+	if err := persist.WriteUint32(w, uint32(len(q.rotMatrix))); err != nil {
+		return err
+	}
+	for _, row := range q.rotMatrix {
+		if err := persist.WriteFloat32Slice(w, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (q *Int4Quantizer) LoadState(r io.Reader) error {
+	scale, err := persist.ReadFloat32Slice(r)
+	if err != nil {
+		return err
+	}
+	q.scale = scale
+
+	rotRows, err := persist.ReadUint32(r)
+	if err != nil {
+		return err
+	}
+	if rotRows > 0 {
+		q.rotMatrix = make([][]float32, rotRows)
+		for i := range q.rotMatrix {
+			q.rotMatrix[i], err = persist.ReadFloat32Slice(r)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if len(q.scale) > 0 || len(q.rotMatrix) > 0 {
+		q.trained = true
+	}
+	return nil
 }
 
 type RaBitQQuantizer struct {
@@ -457,24 +536,26 @@ func computeRandomRotation(dim int, seed int64) [][]float32 {
 }
 
 func orthogonalize(mat [][]float32, dim int) [][]float32 {
-	for i := 0; i < dim; i++ {
-		for k := 0; k < i; k++ {
-			dot := float32(0)
-			for j := 0; j < dim; j++ {
-				dot += mat[i][j] * mat[k][j]
+	for pass := 0; pass < 2; pass++ {
+		for i := 0; i < dim; i++ {
+			for k := 0; k < i; k++ {
+				dot := float32(0)
+				for j := 0; j < dim; j++ {
+					dot += mat[i][j] * mat[k][j]
+				}
+				for j := 0; j < dim; j++ {
+					mat[i][j] -= dot * mat[k][j]
+				}
 			}
+			norm := float32(0)
 			for j := 0; j < dim; j++ {
-				mat[i][j] -= dot * mat[k][j]
+				norm += mat[i][j] * mat[i][j]
 			}
-		}
-		norm := float32(0)
-		for j := 0; j < dim; j++ {
-			norm += mat[i][j] * mat[i][j]
-		}
-		norm = float32(math.Sqrt(float64(norm)))
-		if norm > 0 {
-			for j := 0; j < dim; j++ {
-				mat[i][j] /= norm
+			norm = float32(math.Sqrt(float64(norm)))
+			if norm > 0 {
+				for j := 0; j < dim; j++ {
+					mat[i][j] /= norm
+				}
 			}
 		}
 	}
@@ -508,12 +589,13 @@ func applyInverseRotation(vec []float32, rot [][]float32) []float32 {
 }
 
 type PQQuantizer struct {
-	dimension int
-	numSub    int
-	subDim    int
-	codebooks [][][]float32
-	k         int
-	rng       *rand.Rand
+	dimension  int
+	numSub     int
+	subDim     int
+	codebooks  [][][]float32
+	k          int
+	rng        *rand.Rand
+	metricType types.MetricType
 }
 
 func NewPQQuantizer(dimension, numSubquantizers int) *PQQuantizer {
@@ -522,11 +604,27 @@ func NewPQQuantizer(dimension, numSubquantizers int) *PQQuantizer {
 		subDim++
 	}
 	return &PQQuantizer{
-		dimension: dimension,
-		numSub:    numSubquantizers,
-		subDim:    subDim,
-		k:         256,
-		rng:       rand.New(rand.NewSource(42)),
+		dimension:  dimension,
+		numSub:     numSubquantizers,
+		subDim:     subDim,
+		k:          256,
+		rng:        rand.New(rand.NewSource(42)),
+		metricType: types.MetricTypeL2,
+	}
+}
+
+func NewPQQuantizerWithMetric(dimension, numSubquantizers int, metricType types.MetricType) *PQQuantizer {
+	subDim := dimension / numSubquantizers
+	if dimension%numSubquantizers != 0 {
+		subDim++
+	}
+	return &PQQuantizer{
+		dimension:  dimension,
+		numSub:     numSubquantizers,
+		subDim:     subDim,
+		k:          256,
+		rng:        rand.New(rand.NewSource(42)),
+		metricType: metricType,
 	}
 }
 
@@ -700,25 +798,42 @@ func (q *PQQuantizer) ApproximateDistance(code []byte, query []float32) float32 
 		return 0
 	}
 
-	var dist float32
-	for s := 0; s < q.numSub; s++ {
-		start := s * q.subDim
-		end := start + q.subDim
-		if end > q.dimension {
-			end = q.dimension
+	switch q.metricType {
+	case types.MetricTypeIP, types.MetricTypeCosine:
+		var dot float32
+		for s := 0; s < q.numSub; s++ {
+			start := s * q.subDim
+			c := int(code[s])
+			if c >= len(q.codebooks[s]) {
+				continue
+			}
+			centroid := q.codebooks[s][c]
+			for d := 0; d < len(centroid) && start+d < len(query); d++ {
+				dot += query[start+d] * centroid[d]
+			}
 		}
+		return 1.0 - dot
+	default:
+		var dist float32
+		for s := 0; s < q.numSub; s++ {
+			start := s * q.subDim
+			end := start + q.subDim
+			if end > q.dimension {
+				end = q.dimension
+			}
 
-		c := int(code[s])
-		if c >= len(q.codebooks[s]) {
-			continue
+			c := int(code[s])
+			if c >= len(q.codebooks[s]) {
+				continue
+			}
+			centroid := q.codebooks[s][c]
+			for d := 0; d < len(centroid) && start+d < len(query); d++ {
+				diff := query[start+d] - centroid[d]
+				dist += diff * diff
+			}
 		}
-		centroid := q.codebooks[s][c]
-		for d := 0; d < len(centroid) && start+d < len(query); d++ {
-			diff := query[start+d] - centroid[d]
-			dist += diff * diff
-		}
+		return dist
 	}
-	return dist
 }
 
 func quantizeByType(vec []float32, qt types.QuantizeType, dim int, enableRot bool) ([]byte, error) {
@@ -727,18 +842,97 @@ func quantizeByType(vec []float32, qt types.QuantizeType, dim int, enableRot boo
 		q := NewFP16Quantizer()
 		return q.Encode(vec, nil), nil
 	case types.QuantizeTypeInt8:
-		q := NewInt8Quantizer(dim, enableRot)
-		q.Train([][]float32{vec})
-		return q.Encode(vec, nil), nil
+		return encodeInt8NoTrain(vec, dim, enableRot), nil
 	case types.QuantizeTypeInt4:
-		q := NewInt4Quantizer(dim, enableRot)
-		q.Train([][]float32{vec})
-		return q.Encode(vec, nil), nil
+		return encodeInt4NoTrain(vec, dim, enableRot), nil
 	case types.QuantizeTypeRaBitQ:
-		q := NewRaBitQQuantizer(dim, enableRot)
-		q.Train([][]float32{vec})
-		return q.Encode(vec, nil), nil
+		return encodeRaBitQNoTrain(vec, dim, enableRot), nil
 	default:
 		return nil, fmt.Errorf("unsupported quantize type: %v", qt)
 	}
+}
+
+func encodeInt8NoTrain(vec []float32, dim int, enableRot bool) []byte {
+	v := vec
+	if enableRot {
+		rot := computeRandomRotation(dim, 42)
+		v = applyRotation(vec, rot)
+	}
+	var maxAbs float32
+	for _, x := range v {
+		if x < 0 {
+			if -x > maxAbs {
+				maxAbs = -x
+			}
+		} else {
+			if x > maxAbs {
+				maxAbs = x
+			}
+		}
+	}
+	if maxAbs == 0 {
+		maxAbs = 1
+	}
+	scale := maxAbs / 127.0
+	codes := make([]byte, len(v))
+	for i, x := range v {
+		codes[i] = byte(int8(x / scale))
+	}
+	return codes
+}
+
+func encodeInt4NoTrain(vec []float32, dim int, enableRot bool) []byte {
+	v := vec
+	if enableRot {
+		rot := computeRandomRotation(dim, 42)
+		v = applyRotation(vec, rot)
+	}
+	var maxAbs float32
+	for _, x := range v {
+		if x < 0 {
+			if -x > maxAbs {
+				maxAbs = -x
+			}
+		} else {
+			if x > maxAbs {
+				maxAbs = x
+			}
+		}
+	}
+	if maxAbs == 0 {
+		maxAbs = 1
+	}
+	scale := maxAbs / 7.0
+	n := len(v)
+	codes := make([]byte, (n+1)/2)
+	for i := 0; i < n; i++ {
+		nibble := int8(v[i] / scale)
+		if nibble > 7 {
+			nibble = 7
+		}
+		if nibble < -7 {
+			nibble = -7
+		}
+		if i%2 == 0 {
+			codes[i/2] = byte(nibble & 0x0F)
+		} else {
+			codes[i/2] |= byte(nibble << 4)
+		}
+	}
+	return codes
+}
+
+func encodeRaBitQNoTrain(vec []float32, dim int, enableRot bool) []byte {
+	v := vec
+	if enableRot {
+		rot := computeRandomRotation(dim, 42)
+		v = applyRotation(vec, rot)
+	}
+	codes := make([]byte, (len(v)+7)/8)
+	for i, x := range v {
+		if x >= 0 {
+			codes[i/8] |= 1 << (i % 8)
+		}
+	}
+	return codes
 }

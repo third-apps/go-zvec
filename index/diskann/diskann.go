@@ -1,15 +1,20 @@
 package diskann
 
 import (
+	"bufio"
+	"container/heap"
 	"container/list"
+	"io"
+	"log/slog"
 	"math"
 	"math/rand"
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 
-	"github.com/third-apps/go-zvec/index/flat"
 	"github.com/third-apps/go-zvec/metric"
+	"github.com/third-apps/go-zvec/persist"
 	"github.com/third-apps/go-zvec/storage"
 	"github.com/third-apps/go-zvec/types"
 )
@@ -19,9 +24,78 @@ type candidate struct {
 	dist float32
 }
 
+type candMinHeap []candidate
+
+func (h candMinHeap) Len() int            { return len(h) }
+func (h candMinHeap) Less(i, j int) bool  { return h[i].dist < h[j].dist }
+func (h candMinHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *candMinHeap) Push(x interface{}) { *h = append(*h, x.(candidate)) }
+func (h *candMinHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+type candMaxHeap []candidate
+
+func (h candMaxHeap) Len() int            { return len(h) }
+func (h candMaxHeap) Less(i, j int) bool  { return h[i].dist > h[j].dist }
+func (h candMaxHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *candMaxHeap) Push(x interface{}) { *h = append(*h, x.(candidate)) }
+func (h *candMaxHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
 type cacheEntry struct {
 	key uint64
 	vec []float32
+}
+
+type shardedLRUCache struct {
+	shards []*lruCache
+	mask   uint64
+}
+
+func newShardedLRUCache(capacity int, numShards int) *shardedLRUCache {
+	if numShards <= 0 || (numShards&(numShards-1)) != 0 {
+		numShards = 16 // default to 16 shards, must be power of 2
+	}
+	shardCap := capacity / numShards
+	if shardCap < 1 {
+		shardCap = 1
+	}
+	shards := make([]*lruCache, numShards)
+	for i := 0; i < numShards; i++ {
+		shards[i] = newLRUCache(shardCap)
+	}
+	return &shardedLRUCache{
+		shards: shards,
+		mask:   uint64(numShards - 1),
+	}
+}
+
+func (c *shardedLRUCache) getShard(key uint64) *lruCache {
+	// simple hash
+	hash := key ^ (key >> 16)
+	return c.shards[hash&c.mask]
+}
+
+func (c *shardedLRUCache) Get(key uint64) ([]float32, bool) {
+	return c.getShard(key).Get(key)
+}
+
+func (c *shardedLRUCache) Put(key uint64, vec []float32) {
+	c.getShard(key).Put(key, vec)
+}
+
+func (c *shardedLRUCache) Delete(key uint64) {
+	c.getShard(key).Delete(key)
 }
 
 type lruCache struct {
@@ -93,11 +167,17 @@ type DiskAnnIndex struct {
 
 	adjList    [][]uint64
 	pks        []string
+	pkToDocID  map[string]int
+	deleted    []bool
+	liveCount  int
 	enterPoint int
 	rng        *rand.Rand
 
+	epochPool    sync.Pool
+	currentEpoch uint64
+
 	vectorStore storage.Storage
-	vectorCache *lruCache
+	vectorCache *shardedLRUCache
 	cacheMax    int
 
 	path      string
@@ -117,9 +197,17 @@ func NewDiskAnnIndex(dimension int, metricType types.MetricType,
 		saturateGraph: saturateGraph,
 		adjList:       make([][]uint64, 0),
 		pks:           make([]string, 0),
+		pkToDocID:     make(map[string]int),
+		deleted:       make([]bool, 0),
 		enterPoint:    -1,
-		rng:         rand.New(rand.NewSource(42)),
-		vectorCache: newLRUCache(4096),
+		rng:           rand.New(rand.NewSource(42)),
+		epochPool: sync.Pool{
+			New: func() interface{} {
+				v := make([]uint64, 0, 65536)
+				return &v
+			},
+		},
+		vectorCache: newShardedLRUCache(4096, 16),
 		cacheMax:    4096,
 	}
 }
@@ -161,17 +249,23 @@ func (idx *DiskAnnIndex) getVector(docID uint64) []float32 {
 	}
 	if idx.vectorStore != nil {
 		buf := make([]byte, idx.dimension*4)
-		_, err := idx.vectorStore.Read(int64(docID)*int64(idx.dimension*4), buf)
-		if err == nil {
-			vec := make([]float32, idx.dimension)
-			for j := 0; j < idx.dimension; j++ {
-				vec[j] = math.Float32frombits(
-					uint32(buf[j*4]) | uint32(buf[j*4+1])<<8 |
-						uint32(buf[j*4+2])<<16 | uint32(buf[j*4+3])<<24)
-			}
-			idx.cachePut(docID, vec)
-			return vec
+		n, err := idx.vectorStore.Read(int64(docID)*int64(idx.dimension*4), buf)
+		if err != nil {
+			slog.Warn("diskann: failed to read vector from store", "docID", docID, "error", err)
+			return nil
 		}
+		if n != len(buf) {
+			slog.Warn("diskann: partial vector read from store", "docID", docID, "expected", len(buf), "got", n)
+			return nil
+		}
+		vec := make([]float32, idx.dimension)
+		for j := 0; j < idx.dimension; j++ {
+			vec[j] = math.Float32frombits(
+				uint32(buf[j*4]) | uint32(buf[j*4+1])<<8 |
+					uint32(buf[j*4+2])<<16 | uint32(buf[j*4+3])<<24)
+		}
+		idx.cachePut(docID, vec)
+		return vec
 	}
 	return nil
 }
@@ -196,45 +290,98 @@ func (idx *DiskAnnIndex) putVector(docID uint64, vec []float32) {
 				if err2 == nil {
 					idx.vectorStore.Close()
 					idx.vectorStore = fileStore
-					idx.vectorStore.Write(int64(docID)*int64(idx.dimension*4), buf)
+					if err3 := idx.vectorStore.Write(int64(docID)*int64(idx.dimension*4), buf); err3 != nil {
+						slog.Warn("diskann: failed to write vector to fallback file store", "docID", docID, "error", err3)
+					}
+				} else {
+					slog.Warn("diskann: failed to open fallback file store", "error", err2)
 				}
+			} else {
+				slog.Warn("diskann: failed to write vector to store", "docID", docID, "error", err)
 			}
 		}
 	}
 }
 
 func (idx *DiskAnnIndex) Add(vector []float32, pk string) uint64 {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
 	v := make([]float32, len(vector))
 	copy(v, vector)
 	if idx.metricType == types.MetricTypeCosine {
 		v = metric.Normalize(v)
 	}
 
+	idx.mu.Lock()
+
 	docID := uint64(len(idx.pks))
 	idx.pks = append(idx.pks, pk)
+	idx.pkToDocID[pk] = len(idx.pks) - 1
 	idx.adjList = append(idx.adjList, []uint64{})
+	idx.deleted = append(idx.deleted, false)
+	idx.liveCount++
 	idx.putVector(docID, v)
 
 	if idx.enterPoint < 0 {
 		idx.enterPoint = int(docID)
+		idx.mu.Unlock()
 		return docID
 	}
 
-	idx.pruneAndAdd(docID, v)
+	enterPoint := idx.enterPoint
+	idx.mu.Unlock()
+
+	idx.mu.RLock()
+	epoch := atomic.AddUint64(&idx.currentEpoch, 1)
+	n := len(idx.pks)
+	searchList := idx.searchList
+	maxDegree := idx.maxDegree
+	saturateGraph := idx.saturateGraph
+	epochPtr := idx.epochPool.Get().(*[]uint64)
+	var visited []uint64
+	if cap(*epochPtr) >= n {
+		visited = (*epochPtr)[:n]
+	} else {
+		visited = make([]uint64, n)
+	}
+	candidates := idx.greedySearch(v, uint64(enterPoint), searchList, visited, epoch)
+	idx.mu.RUnlock()
+	*epochPtr = visited[:cap(visited)]
+	idx.epochPool.Put(epochPtr)
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].dist < candidates[j].dist
+	})
+
+	maxCandidates := maxDegree
+	if saturateGraph {
+		maxCandidates = searchList
+	}
+	if len(candidates) > maxCandidates {
+		candidates = candidates[:maxCandidates]
+	}
+
+	idx.mu.Lock()
+	for _, c := range candidates {
+		if len(idx.adjList[docID]) >= idx.maxDegree {
+			break
+		}
+		idx.addUndirectedEdge(docID, c.id)
+	}
+	for _, c := range candidates {
+		idx.trimNeighbors(c.id, docID)
+	}
+	idx.mu.Unlock()
+
 	return docID
 }
 
-func (idx *DiskAnnIndex) Search(query []float32, topK int) []flat.SearchResult {
+func (idx *DiskAnnIndex) Search(query []float32, topK int) []types.SearchResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.searchLocked(query, topK)
 }
 
-func (idx *DiskAnnIndex) searchLocked(query []float32, topK int) []flat.SearchResult {
-	if idx.enterPoint < 0 || len(idx.pks) == 0 {
+func (idx *DiskAnnIndex) searchLocked(query []float32, topK int) []types.SearchResult {
+	if idx.enterPoint < 0 || idx.liveCount == 0 {
 		return nil
 	}
 
@@ -244,8 +391,21 @@ func (idx *DiskAnnIndex) searchLocked(query []float32, topK int) []flat.SearchRe
 		q = metric.Normalize(q)
 	}
 
-	visited := make(map[uint64]struct{})
-	results := idx.greedySearch(q, uint64(idx.enterPoint), idx.searchList, visited)
+	epoch := atomic.AddUint64(&idx.currentEpoch, 1)
+	n := len(idx.pks)
+	epochPtr := idx.epochPool.Get().(*[]uint64)
+	var visited []uint64
+	if cap(*epochPtr) >= n {
+		visited = (*epochPtr)[:n]
+	} else {
+		visited = make([]uint64, n)
+	}
+	defer func() {
+		*epochPtr = visited[:cap(visited)]
+		idx.epochPool.Put(epochPtr)
+	}()
+
+	results := idx.greedySearch(q, uint64(idx.enterPoint), idx.searchList, visited, epoch)
 
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].dist < results[j].dist
@@ -255,116 +415,143 @@ func (idx *DiskAnnIndex) searchLocked(query []float32, topK int) []flat.SearchRe
 		topK = len(results)
 	}
 
-	out := make([]flat.SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		out[i] = flat.SearchResult{
+	out := make([]types.SearchResult, 0, topK)
+	for i := 0; i < len(results); i++ {
+		if idx.deleted[results[i].id] {
+			continue
+		}
+		out = append(out, types.SearchResult{
 			DocID: results[i].id,
 			Score: 1.0 / (1.0 + results[i].dist),
 			PK:    idx.pks[results[i].id],
+		})
+		if len(out) >= topK {
+			break
 		}
 	}
 	return out
 }
 
 func (idx *DiskAnnIndex) SearchWithFilter(query []float32, topK int,
-	filterFn func(pk string) bool) []flat.SearchResult {
+	filterFn func(pk string) bool) []types.SearchResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	all := idx.searchLocked(query, len(idx.pks))
-	var results []flat.SearchResult
-	for _, r := range all {
-		if filterFn(r.PK) {
-			results = append(results, r)
-			if len(results) >= topK {
-				break
-			}
-		}
+	if len(idx.pks) == 0 {
+		return nil
 	}
-	return results
-}
 
-func (idx *DiskAnnIndex) Delete(pk string) bool {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	for i, p := range idx.pks {
-		if p == pk {
-			idx.vectorCache.Delete(uint64(i))
-			idx.pks = append(idx.pks[:i], idx.pks[i+1:]...)
-			idx.adjList = append(idx.adjList[:i], idx.adjList[i+1:]...)
-			for j := range idx.adjList {
-				newList := make([]uint64, 0, len(idx.adjList[j]))
-				for _, nb := range idx.adjList[j] {
-					if nb == uint64(i) {
-						continue
-					}
-					if nb > uint64(i) {
-						newList = append(newList, nb-1)
-					} else {
-						newList = append(newList, nb)
-					}
-				}
-				idx.adjList[j] = newList
-			}
-			if idx.enterPoint == i {
-				if len(idx.pks) > 0 {
-					idx.enterPoint = 0
-				} else {
-					idx.enterPoint = -1
-				}
-			} else if idx.enterPoint > i {
-				idx.enterPoint--
-			}
-			return true
-		}
+	q := make([]float32, len(query))
+	copy(q, query)
+	if idx.metricType == types.MetricTypeCosine {
+		q = metric.Normalize(q)
 	}
-	return false
-}
 
-func (idx *DiskAnnIndex) Size() int {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return len(idx.pks)
-}
+	maxL := len(idx.pks)
+	L := topK * 2
+	if L < idx.searchList {
+		L = idx.searchList
+	}
+	if L > maxL {
+		L = maxL
+	}
 
-func (idx *DiskAnnIndex) Dimension() int {
-	return idx.dimension
-}
+	if idx.enterPoint < 0 || idx.liveCount == 0 {
+		return nil
+	}
 
-func (idx *DiskAnnIndex) greedySearch(query []float32, start uint64, k int, visited map[uint64]struct{}) []candidate {
-	var cand []candidate
-	var results []candidate
+	epoch := atomic.AddUint64(&idx.currentEpoch, 1)
+	n := len(idx.pks)
+	epochPtr := idx.epochPool.Get().(*[]uint64)
+	var visited []uint64
+	if cap(*epochPtr) >= n {
+		visited = (*epochPtr)[:n]
+	} else {
+		visited = make([]uint64, n)
+	}
+	defer func() {
+		*epochPtr = visited[:cap(visited)]
+		idx.epochPool.Put(epochPtr)
+	}()
 
-	vec := idx.getVector(start)
+	vec := idx.getVector(uint64(idx.enterPoint))
 	if vec == nil {
 		return nil
 	}
-	startDist := idx.distFn(query, vec)
-	startCand := candidate{id: start, dist: startDist}
+	startDist := idx.distFn(q, vec)
+	startCand := candidate{id: uint64(idx.enterPoint), dist: startDist}
 
-	cand = append(cand, startCand)
-	results = append(results, startCand)
-	visited[start] = struct{}{}
+	candidates := &candMinHeap{startCand}
+	heap.Init(candidates)
+	resultHeap := &candMaxHeap{startCand}
+	heap.Init(resultHeap)
+	visited[uint64(idx.enterPoint)] = epoch
 
-	for len(cand) > 0 {
-		closest := cand[0]
-		cand = cand[1:]
+	var results []types.SearchResult
+	lastL := 0
+	for L <= maxL && L != lastL {
+		lastL = L
 
-		farthestDist := float32(math.MaxFloat32)
-		if len(results) >= k {
-			farthestDist = results[len(results)-1].dist
+		idx.expandGreedySearch(q, L, visited, epoch, candidates, resultHeap)
+
+		sorted := make([]candidate, resultHeap.Len())
+		for i, c := range *resultHeap {
+			sorted[i] = c
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].dist < sorted[j].dist
+		})
+
+		results = nil
+		for _, c := range sorted {
+			if idx.deleted[c.id] {
+				continue
+			}
+			if filterFn(idx.pks[c.id]) {
+				results = append(results, types.SearchResult{
+					DocID: c.id,
+					Score: 1.0 / (1.0 + c.dist),
+					PK:    idx.pks[c.id],
+				})
+				if len(results) >= topK {
+					return results
+				}
+			}
 		}
 
-		if closest.dist > farthestDist {
+		if len(results) >= topK {
 			break
 		}
 
+		L *= 2
+		if L > maxL {
+			L = maxL
+		}
+	}
+
+	return results
+}
+
+func (idx *DiskAnnIndex) expandGreedySearch(query []float32, k int,
+	visited []uint64, epoch uint64, candidates *candMinHeap, result *candMaxHeap) {
+
+	for candidates.Len() > 0 {
+		closest := (*candidates)[0]
+
+		if result.Len() >= k && closest.dist > (*result)[0].dist {
+			break
+		}
+
+		heap.Pop(candidates)
+
 		for _, nb := range idx.adjList[closest.id] {
-			if _, seen := visited[nb]; seen {
+			if visited[nb] == epoch {
 				continue
 			}
-			visited[nb] = struct{}{}
+			if idx.deleted[nb] {
+				continue
+			}
+			visited[nb] = epoch
 
 			nbVec := idx.getVector(nb)
 			if nbVec == nil {
@@ -372,29 +559,141 @@ func (idx *DiskAnnIndex) greedySearch(query []float32, start uint64, k int, visi
 			}
 			nbDist := idx.distFn(query, nbVec)
 
-			if len(results) < k || nbDist < farthestDist {
+			if result.Len() < k || nbDist < (*result)[0].dist {
 				nc := candidate{id: nb, dist: nbDist}
-				cand = append(cand, nc)
-				results = append(results, nc)
-				sort.Slice(results, func(i, j int) bool {
-					return results[i].dist < results[j].dist
-				})
-				if len(results) > k {
-					results = results[:k]
+				heap.Push(candidates, nc)
+				heap.Push(result, nc)
+				if result.Len() > k {
+					heap.Pop(result)
 				}
-				if len(results) >= k {
-					farthestDist = results[len(results)-1].dist
+			}
+		}
+	}
+}
+
+func (idx *DiskAnnIndex) Delete(pk string) bool {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	i, ok := idx.pkToDocID[pk]
+	if !ok || idx.deleted[i] {
+		return false
+	}
+	idx.deleted[i] = true
+	idx.liveCount--
+	delete(idx.pkToDocID, pk)
+
+	idx.cleanupGraphForDeletedNode(uint64(i))
+
+	return true
+}
+
+func (idx *DiskAnnIndex) cleanupGraphForDeletedNode(nodeID uint64) {
+	for i, nbs := range idx.adjList {
+		if uint64(i) == nodeID {
+			continue
+		}
+		filtered := make([]uint64, 0, len(nbs))
+		for _, nb := range nbs {
+			if nb != nodeID {
+				filtered = append(filtered, nb)
+			}
+		}
+		if len(filtered) != len(nbs) {
+			idx.adjList[i] = filtered
+		}
+	}
+}
+
+func (idx *DiskAnnIndex) Size() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.liveCount
+}
+
+func (idx *DiskAnnIndex) Dimension() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.dimension
+}
+
+func (idx *DiskAnnIndex) greedySearch(query []float32, start uint64, k int, visited []uint64, epoch uint64) []candidate {
+	vec := idx.getVector(start)
+	if vec == nil {
+		return nil
+	}
+	startDist := idx.distFn(query, vec)
+	startCand := candidate{id: start, dist: startDist}
+
+	candidates := &candMinHeap{startCand}
+	heap.Init(candidates)
+
+	results := &candMaxHeap{startCand}
+	heap.Init(results)
+
+	visited[start] = epoch
+
+	for candidates.Len() > 0 {
+		closest := (*candidates)[0]
+
+		if results.Len() >= k && closest.dist > (*results)[0].dist {
+			break
+		}
+
+		heap.Pop(candidates)
+
+		for _, nb := range idx.adjList[closest.id] {
+			if visited[nb] == epoch {
+				continue
+			}
+			if idx.deleted[nb] {
+				continue
+			}
+			visited[nb] = epoch
+
+			nbVec := idx.getVector(nb)
+			if nbVec == nil {
+				continue
+			}
+			nbDist := idx.distFn(query, nbVec)
+
+			if results.Len() < k || nbDist < (*results)[0].dist {
+				nc := candidate{id: nb, dist: nbDist}
+				heap.Push(candidates, nc)
+				heap.Push(results, nc)
+				if results.Len() > k {
+					heap.Pop(results)
 				}
 			}
 		}
 	}
 
-	return results
+	sorted := make([]candidate, results.Len())
+	for i, c := range *results {
+		sorted[i] = c
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].dist < sorted[j].dist
+	})
+	return sorted
 }
 
 func (idx *DiskAnnIndex) pruneAndAdd(newID uint64, newVec []float32) {
-	visited := make(map[uint64]struct{})
-	candidates := idx.greedySearch(newVec, uint64(idx.enterPoint), idx.searchList, visited)
+	epoch := atomic.AddUint64(&idx.currentEpoch, 1)
+	n := len(idx.pks)
+	epochPtr := idx.epochPool.Get().(*[]uint64)
+	var visited []uint64
+	if cap(*epochPtr) >= n {
+		visited = (*epochPtr)[:n]
+	} else {
+		visited = make([]uint64, n)
+	}
+	defer func() {
+		*epochPtr = visited[:cap(visited)]
+		idx.epochPool.Put(epochPtr)
+	}()
+
+	candidates := idx.greedySearch(newVec, uint64(idx.enterPoint), idx.searchList, visited, epoch)
 
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].dist < candidates[j].dist
@@ -408,11 +707,6 @@ func (idx *DiskAnnIndex) pruneAndAdd(newID uint64, newVec []float32) {
 		candidates = candidates[:maxCandidates]
 	}
 
-	connected := make(map[uint64]bool)
-	for _, c := range candidates {
-		connected[c.id] = true
-	}
-
 	for _, c := range candidates {
 		if len(idx.adjList[newID]) >= idx.maxDegree {
 			break
@@ -422,15 +716,6 @@ func (idx *DiskAnnIndex) pruneAndAdd(newID uint64, newVec []float32) {
 
 	for _, c := range candidates {
 		idx.trimNeighbors(c.id, newID)
-	}
-
-	if idx.saturateGraph {
-		for i := 0; i < len(idx.pks)-1; i++ {
-			if uint64(i) == newID {
-				continue
-			}
-			idx.trimNeighbors(uint64(i), newID)
-		}
 	}
 }
 
@@ -506,6 +791,182 @@ func (idx *DiskAnnIndex) Sync() error {
 	if idx.vectorStore != nil {
 		return idx.vectorStore.Sync()
 	}
+	return nil
+}
+
+func (idx *DiskAnnIndex) MemoryBytes() uint64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	var total uint64
+	for _, pk := range idx.pks {
+		total += uint64(len(pk))
+	}
+	for _, nbs := range idx.adjList {
+		total += uint64(len(nbs)) * 8
+	}
+	total += uint64(len(idx.deleted))
+	total += uint64(idx.cacheMax) * uint64(idx.dimension) * 4
+	return total
+}
+
+func (idx *DiskAnnIndex) Save(w io.Writer) error {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	if err := persist.WriteHeader(bw, persist.FileHeader{Magic: persist.MagicNumber, Version: 1, IndexType: persist.IndexTypeDiskAnn}); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.dimension); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, int(idx.metricType)); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.maxDegree); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.searchList); err != nil {
+		return err
+	}
+	if err := persist.WriteFloat32(bw, float32(idx.alpha)); err != nil {
+		return err
+	}
+	b := byte(0)
+	if idx.saturateGraph {
+		b = 1
+	}
+	if err := bw.WriteByte(b); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.enterPoint); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.cacheMax); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.liveCount); err != nil {
+		return err
+	}
+
+	if err := persist.WriteUint32(bw, uint32(len(idx.pks))); err != nil {
+		return err
+	}
+	for _, pk := range idx.pks {
+		if err := persist.WriteString(bw, pk); err != nil {
+			return err
+		}
+	}
+
+	if err := persist.WriteUint32(bw, uint32(len(idx.adjList))); err != nil {
+		return err
+	}
+	for _, nbs := range idx.adjList {
+		if err := persist.WriteUint64Slice(bw, nbs); err != nil {
+			return err
+		}
+	}
+
+	return persist.WriteBoolSlice(bw, idx.deleted)
+}
+
+func (idx *DiskAnnIndex) Load(r io.Reader) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	br := bufio.NewReader(r)
+
+	h, err := persist.ReadHeader(br)
+	if err != nil {
+		return err
+	}
+	if h.IndexType != persist.IndexTypeDiskAnn {
+		return io.ErrUnexpectedEOF
+	}
+
+	dim, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	mt, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	maxDegree, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	searchList, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	alphaF32, err := persist.ReadFloat32(br)
+	if err != nil {
+		return err
+	}
+	saturateGraphByte, err := br.ReadByte()
+	if err != nil {
+		return err
+	}
+	enterPoint, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	cacheMax, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	liveCount, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+
+	pkCount, err := persist.ReadUint32(br)
+	if err != nil {
+		return err
+	}
+	pks := make([]string, pkCount)
+	for i := range pks {
+		pks[i], err = persist.ReadString(br)
+		if err != nil {
+			return err
+		}
+	}
+
+	adjCount, err := persist.ReadUint32(br)
+	if err != nil {
+		return err
+	}
+	adjList := make([][]uint64, adjCount)
+	for i := range adjList {
+		adjList[i], err = persist.ReadUint64Slice(br)
+		if err != nil {
+			return err
+		}
+	}
+
+	idx.dimension = dim
+	idx.metricType = types.MetricType(mt)
+	idx.distFn = metric.GetDistanceFunc(idx.metricType)
+	idx.maxDegree = maxDegree
+	idx.searchList = searchList
+	idx.alpha = float64(alphaF32)
+	idx.saturateGraph = saturateGraphByte == 1
+	idx.enterPoint = enterPoint
+	idx.cacheMax = cacheMax
+	idx.pks = pks
+	idx.adjList = adjList
+	idx.vectorCache = newShardedLRUCache(cacheMax, 16)
+
+	deleted, err := persist.ReadBoolSlice(br)
+	if err != nil {
+		return err
+	}
+	idx.deleted = deleted
+	idx.liveCount = liveCount
 	return nil
 }
 

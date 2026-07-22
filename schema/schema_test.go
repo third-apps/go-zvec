@@ -7,6 +7,7 @@ import (
 	"github.com/third-apps/go-zvec/types"
 )
 
+// TestFieldSchemaValidate_Valid 验证合法字段 Schema 校验通过
 func TestFieldSchemaValidate_Valid(t *testing.T) {
 	f := NewFieldSchema("name", types.DataTypeString, false, 0)
 	if st := f.Validate(); !st.OK() {
@@ -14,6 +15,7 @@ func TestFieldSchemaValidate_Valid(t *testing.T) {
 	}
 }
 
+// TestFieldSchemaValidate_EmptyName 验证空名称字段校验失败
 func TestFieldSchemaValidate_EmptyName(t *testing.T) {
 	f := NewFieldSchema("", types.DataTypeString, false, 0)
 	if st := f.Validate(); st.OK() {
@@ -21,6 +23,7 @@ func TestFieldSchemaValidate_EmptyName(t *testing.T) {
 	}
 }
 
+// TestFieldSchemaValidate_UndefinedType 验证未定义类型字段校验失败
 func TestFieldSchemaValidate_UndefinedType(t *testing.T) {
 	f := NewFieldSchema("f", types.DataTypeUndefined, false, 0)
 	if st := f.Validate(); st.OK() {
@@ -28,6 +31,7 @@ func TestFieldSchemaValidate_UndefinedType(t *testing.T) {
 	}
 }
 
+// TestFieldSchemaValidate_VectorZeroDimension 验证零维度向量字段校验失败
 func TestFieldSchemaValidate_VectorZeroDimension(t *testing.T) {
 	f := NewFieldSchema("vec", types.DataTypeVectorFP32, false, 0)
 	if st := f.Validate(); st.OK() {
@@ -35,6 +39,7 @@ func TestFieldSchemaValidate_VectorZeroDimension(t *testing.T) {
 	}
 }
 
+// TestFieldSchemaValidate_VectorNegativeDimension 验证负维度向量字段校验失败
 func TestFieldSchemaValidate_VectorNegativeDimension(t *testing.T) {
 	f := NewFieldSchema("vec", types.DataTypeVectorFP32, false, -1)
 	if st := f.Validate(); st.OK() {
@@ -42,6 +47,7 @@ func TestFieldSchemaValidate_VectorNegativeDimension(t *testing.T) {
 	}
 }
 
+// TestFieldSchemaValidate_ScalarZeroDimension 验证标量字段零维度校验通过
 func TestFieldSchemaValidate_ScalarZeroDimension(t *testing.T) {
 	f := NewFieldSchema("age", types.DataTypeInt32, false, 0)
 	if st := f.Validate(); !st.OK() {
@@ -49,6 +55,7 @@ func TestFieldSchemaValidate_ScalarZeroDimension(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaAddField_Valid 验证集合 Schema 添加合法字段
 func TestCollectionSchemaAddField_Valid(t *testing.T) {
 	s := NewCollectionSchema("test")
 	f := NewFieldSchema("name", types.DataTypeString, false, 0)
@@ -63,6 +70,7 @@ func TestCollectionSchemaAddField_Valid(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaAddField_Nil 验证集合 Schema 添加 nil 字段校验失败
 func TestCollectionSchemaAddField_Nil(t *testing.T) {
 	s := NewCollectionSchema("test")
 	if st := s.AddField(nil); st.OK() {
@@ -70,6 +78,7 @@ func TestCollectionSchemaAddField_Nil(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaAddField_Duplicate 验证集合 Schema 添加重复字段校验失败
 func TestCollectionSchemaAddField_Duplicate(t *testing.T) {
 	s := NewCollectionSchema("test")
 	s.AddField(NewFieldSchema("name", types.DataTypeString, false, 0))
@@ -78,6 +87,7 @@ func TestCollectionSchemaAddField_Duplicate(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaAddField_Invalid 验证集合 Schema 添加无效字段校验失败
 func TestCollectionSchemaAddField_Invalid(t *testing.T) {
 	s := NewCollectionSchema("test")
 	if st := s.AddField(NewFieldSchema("", types.DataTypeString, false, 0)); st.OK() {
@@ -85,6 +95,7 @@ func TestCollectionSchemaAddField_Invalid(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaAlterField_Valid 验证集合 Schema 修改字段名称和定义
 func TestCollectionSchemaAlterField_Valid(t *testing.T) {
 	s := NewCollectionSchema("test")
 	s.AddField(NewFieldSchema("old", types.DataTypeString, false, 0))
@@ -100,6 +111,7 @@ func TestCollectionSchemaAlterField_Valid(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaAlterField_NotFound 验证集合 Schema 修改不存在字段校验失败
 func TestCollectionSchemaAlterField_NotFound(t *testing.T) {
 	s := NewCollectionSchema("test")
 	if st := s.AlterField("nonexist", "new", nil); st.OK() {
@@ -107,6 +119,7 @@ func TestCollectionSchemaAlterField_NotFound(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaAlterField_InvalidNewField 验证集合 Schema 修改为无效字段校验失败
 func TestCollectionSchemaAlterField_InvalidNewField(t *testing.T) {
 	s := NewCollectionSchema("test")
 	s.AddField(NewFieldSchema("old", types.DataTypeString, false, 0))
@@ -115,6 +128,7 @@ func TestCollectionSchemaAlterField_InvalidNewField(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaAlterField_NilField 验证集合 Schema 修改字段时 nil 新字段仅重命名
 func TestCollectionSchemaAlterField_NilField(t *testing.T) {
 	s := NewCollectionSchema("test")
 	s.AddField(NewFieldSchema("old", types.DataTypeString, false, 0))
@@ -129,6 +143,7 @@ func TestCollectionSchemaAlterField_NilField(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaDropField_Valid 验证集合 Schema 删除字段功能
 func TestCollectionSchemaDropField_Valid(t *testing.T) {
 	s := NewCollectionSchema("test")
 	s.AddField(NewFieldSchema("name", types.DataTypeString, false, 0))
@@ -144,6 +159,7 @@ func TestCollectionSchemaDropField_Valid(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaDropField_NotFound 验证集合 Schema 删除不存在字段校验失败
 func TestCollectionSchemaDropField_NotFound(t *testing.T) {
 	s := NewCollectionSchema("test")
 	if st := s.DropField("nonexist"); st.OK() {
@@ -151,6 +167,7 @@ func TestCollectionSchemaDropField_NotFound(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaFieldOrder 验证集合 Schema 字段添加顺序保持
 func TestCollectionSchemaFieldOrder(t *testing.T) {
 	s := NewCollectionSchema("test")
 	s.AddField(NewFieldSchema("a", types.DataTypeString, false, 0))
@@ -162,6 +179,7 @@ func TestCollectionSchemaFieldOrder(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaFilterMethods 验证集合 Schema 向量字段、FTS 字段等过滤方法
 func TestCollectionSchemaFilterMethods(t *testing.T) {
 	s := NewCollectionSchema("test")
 	s.AddField(NewFieldSchema("name", types.DataTypeString, false, 0))
@@ -186,6 +204,7 @@ func TestCollectionSchemaFilterMethods(t *testing.T) {
 	}
 }
 
+// TestFieldSchemaElementDataType 验证数组类型的元素数据类型推导
 func TestFieldSchemaElementDataType(t *testing.T) {
 	tests := []struct {
 		dt     types.DataType
@@ -211,6 +230,7 @@ func TestFieldSchemaElementDataType(t *testing.T) {
 	}
 }
 
+// TestFieldSchemaElementDataSize 验证数组类型的元素字节大小
 func TestFieldSchemaElementDataSize(t *testing.T) {
 	tests := []struct {
 		dt     types.DataType
@@ -235,6 +255,7 @@ func TestFieldSchemaElementDataSize(t *testing.T) {
 	}
 }
 
+// TestHasIndex 验证集合 Schema 判断字段是否已建索引
 func TestHasIndex(t *testing.T) {
 	s := NewCollectionSchema("test")
 	s.AddField(NewFieldSchema("name", types.DataTypeString, false, 0))
@@ -249,6 +270,7 @@ func TestHasIndex(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaDefaults 验证新建集合 Schema 默认值
 func TestCollectionSchemaDefaults(t *testing.T) {
 	s := NewCollectionSchema("test")
 	if s.Name != "test" {

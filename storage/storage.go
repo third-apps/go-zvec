@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -34,6 +36,7 @@ type Storage interface {
 }
 
 type FileStorage struct {
+	mu   sync.RWMutex
 	f    *os.File
 	path string
 	opts StorageOptions
@@ -63,15 +66,21 @@ func OpenFileStorage(path string, opts StorageOptions) (*FileStorage, error) {
 }
 
 func (s *FileStorage) Read(offset int64, data []byte) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.f.ReadAt(data, offset)
 }
 
 func (s *FileStorage) Write(offset int64, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.f.WriteAt(data, offset)
 	return err
 }
 
 func (s *FileStorage) Sync() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.f.Sync()
 }
 
@@ -88,6 +97,7 @@ func (s *FileStorage) Close() error {
 }
 
 type MemoryStorage struct {
+	mu   sync.RWMutex
 	data []byte
 }
 
@@ -96,7 +106,9 @@ func NewMemoryStorage() *MemoryStorage {
 }
 
 func (s *MemoryStorage) Read(offset int64, data []byte) (int, error) {
-	if offset >= int64(len(s.data)) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if offset < 0 || offset >= int64(len(s.data)) {
 		return 0, status.NewInternalError("read out of bounds").GoError()
 	}
 	n := copy(data, s.data[offset:])
@@ -104,12 +116,24 @@ func (s *MemoryStorage) Read(offset int64, data []byte) (int, error) {
 }
 
 func (s *MemoryStorage) Write(offset int64, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if offset < 0 {
+		return fmt.Errorf("negative offset %d", offset)
+	}
 	end := offset + int64(len(data))
 	if end > int64(len(s.data)) {
-		newCap := max(int64(len(s.data))*2, end)
+		newCap := max(int64(cap(s.data))*2, end)
+		if newCap < end {
+			newCap = end
+		}
 		newData := make([]byte, newCap)
 		copy(newData, s.data)
 		s.data = newData[:end]
+	} else if offset > int64(len(s.data)) {
+		newData := make([]byte, end)
+		copy(newData, s.data)
+		s.data = newData
 	}
 	copy(s.data[offset:], data)
 	return nil
@@ -120,15 +144,20 @@ func (s *MemoryStorage) Sync() error {
 }
 
 func (s *MemoryStorage) Size() (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return int64(len(s.data)), nil
 }
 
 func (s *MemoryStorage) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.data = nil
 	return nil
 }
 
 type MMAPStorage struct {
+	mu        sync.RWMutex
 	data      []byte
 	file      *os.File
 	mapHandle syscall.Handle
@@ -166,7 +195,12 @@ func NewMMAPStorage(path string, size int64, opts StorageOptions) (*MMAPStorage,
 
 	f := os.NewFile(uintptr(handle), path)
 
-	if !opts.ReadOnly && size > 0 {
+	if size <= 0 {
+		f.Close()
+		return nil, fmt.Errorf("mmap size must be positive, got %d", size)
+	}
+
+	if !opts.ReadOnly {
 		if err := f.Truncate(size); err != nil {
 			f.Close()
 			return nil, err
@@ -221,7 +255,12 @@ func NewMMAPStorage(path string, size int64, opts StorageOptions) (*MMAPStorage,
 }
 
 func (s *MMAPStorage) Read(offset int64, data []byte) (int, error) {
-	if offset >= s.size {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if offset < 0 || offset > s.size {
+		return 0, status.NewInternalError("read out of bounds").GoError()
+	}
+	if len(data) > 0 && offset > s.size-int64(len(data)) {
 		return 0, status.NewInternalError("read out of bounds").GoError()
 	}
 	n := copy(data, s.data[offset:])
@@ -229,7 +268,12 @@ func (s *MMAPStorage) Read(offset int64, data []byte) (int, error) {
 }
 
 func (s *MMAPStorage) Write(offset int64, data []byte) error {
-	if offset+int64(len(data)) > s.size {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if offset < 0 || offset > s.size {
+		return status.NewInternalError("write out of bounds").GoError()
+	}
+	if len(data) > 0 && offset > s.size-int64(len(data)) {
 		return status.NewInternalError("write out of bounds").GoError()
 	}
 	copy(s.data[offset:], data)
@@ -237,6 +281,8 @@ func (s *MMAPStorage) Write(offset int64, data []byte) error {
 }
 
 func (s *MMAPStorage) Sync() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := syscall.FlushViewOfFile(s.basePtr, uintptr(len(s.data))); err != nil {
 		return err
 	}
@@ -244,22 +290,36 @@ func (s *MMAPStorage) Sync() error {
 }
 
 func (s *MMAPStorage) Size() (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.size, nil
 }
 
 func (s *MMAPStorage) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var firstErr error
 	if s.data != nil {
-		syscall.UnmapViewOfFile(s.basePtr)
+		if err := syscall.UnmapViewOfFile(s.basePtr); err != nil && firstErr == nil {
+			firstErr = err
+		}
 		s.data = nil
 	}
 	if s.mapHandle != 0 {
-		syscall.CloseHandle(s.mapHandle)
+		if err := syscall.CloseHandle(s.mapHandle); err != nil && firstErr == nil {
+			firstErr = err
+		}
 		s.mapHandle = 0
 	}
-	return s.file.Close()
+	if err := s.file.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (s *MMAPStorage) Data() []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.data
 }
 

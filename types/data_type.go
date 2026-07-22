@@ -43,7 +43,7 @@ const (
 )
 
 func (t DataType) IsVector() bool {
-	return t >= DataTypeVectorBinary32 && t <= DataTypeVectorInt16
+	return t.IsDenseVector() || t.IsSparseVector()
 }
 
 func (t DataType) IsDenseVector() bool {

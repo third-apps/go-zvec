@@ -7,6 +7,7 @@ import (
 	"github.com/third-apps/go-zvec/types"
 )
 
+// TestDocValidate_ValidDoc 验证合法文档通过校验
 func TestDocValidate_ValidDoc(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	s.AddField(schema.NewFieldSchema("id", types.DataTypeString, false, 0))
@@ -21,6 +22,7 @@ func TestDocValidate_ValidDoc(t *testing.T) {
 	}
 }
 
+// TestDocValidate_EmptyID 验证空 ID 文档校验失败
 func TestDocValidate_EmptyID(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	s.AddField(schema.NewFieldSchema("id", types.DataTypeString, false, 0))
@@ -31,6 +33,7 @@ func TestDocValidate_EmptyID(t *testing.T) {
 	}
 }
 
+// TestDocValidate_MissingField 验证缺失必填字段文档校验失败
 func TestDocValidate_MissingField(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	s.AddField(schema.NewFieldSchema("name", types.DataTypeString, false, 0))
@@ -41,6 +44,7 @@ func TestDocValidate_MissingField(t *testing.T) {
 	}
 }
 
+// TestDocValidate_NullableField 验证可空字段缺失时文档校验通过
 func TestDocValidate_NullableField(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	s.AddField(schema.NewFieldSchema("name", types.DataTypeString, true, 0))
@@ -51,6 +55,7 @@ func TestDocValidate_NullableField(t *testing.T) {
 	}
 }
 
+// TestDocValidate_MissingVector 验证缺失必填向量字段文档校验失败
 func TestDocValidate_MissingVector(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	s.AddField(schema.NewFieldSchema("vec", types.DataTypeVectorFP32, false, 4))
@@ -61,6 +66,7 @@ func TestDocValidate_MissingVector(t *testing.T) {
 	}
 }
 
+// TestDocValidate_NullableVector 验证可空向量字段缺失时文档校验通过
 func TestDocValidate_NullableVector(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	s.AddField(schema.NewFieldSchema("vec", types.DataTypeVectorFP32, true, 4))
@@ -71,6 +77,7 @@ func TestDocValidate_NullableVector(t *testing.T) {
 	}
 }
 
+// TestDocValidate_VectorDimensionMismatch 验证向量维度不匹配时文档校验失败
 func TestDocValidate_VectorDimensionMismatch(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	s.AddField(schema.NewFieldSchema("vec", types.DataTypeVectorFP32, false, 4))
@@ -83,6 +90,7 @@ func TestDocValidate_VectorDimensionMismatch(t *testing.T) {
 	}
 }
 
+// TestDocValidate_MultipleFields 验证多字段文档校验通过
 func TestDocValidate_MultipleFields(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	s.AddField(schema.NewFieldSchema("id", types.DataTypeString, false, 0))
@@ -99,6 +107,7 @@ func TestDocValidate_MultipleFields(t *testing.T) {
 	}
 }
 
+// TestDocValidate_UnknownField 验证空 Schema 下文档校验通过
 func TestDocValidate_UnknownField(t *testing.T) {
 	s := schema.NewCollectionSchema("test")
 	d := NewDoc("doc1")
@@ -107,6 +116,7 @@ func TestDocValidate_UnknownField(t *testing.T) {
 	}
 }
 
+// TestDocGetters 验证文档字段、向量、稀疏向量的访问器方法
 func TestDocGetters(t *testing.T) {
 	d := NewDoc("doc1")
 	d.SetStringField("name", "alice")

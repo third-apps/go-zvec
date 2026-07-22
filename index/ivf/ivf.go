@@ -1,13 +1,17 @@
 package ivf
 
 import (
+	"bufio"
+	"container/heap"
+	"io"
 	"math"
 	"math/rand"
 	"sort"
 	"sync"
+	"sync/atomic"
 
-	"github.com/third-apps/go-zvec/index/flat"
 	"github.com/third-apps/go-zvec/metric"
+	"github.com/third-apps/go-zvec/persist"
 	"github.com/third-apps/go-zvec/types"
 )
 
@@ -24,12 +28,36 @@ type IVFIndex struct {
 	centroids   [][]float32
 	docs        [][]float32
 	pks         []string
+	pkToDocID   map[string]int
 	assignments []int
 	inverted    [][]int
 	trained     bool
 	trainOnce   sync.Once
 	deleted     []bool
 	liveCount   int
+
+	epochPool    sync.Pool
+	currentEpoch uint64
+}
+
+type ivfCandidate struct {
+	dist  float32
+	docID int
+	pk    string
+}
+
+type ivfCandMaxHeap []ivfCandidate
+
+func (h ivfCandMaxHeap) Len() int            { return len(h) }
+func (h ivfCandMaxHeap) Less(i, j int) bool  { return h[i].dist > h[j].dist }
+func (h ivfCandMaxHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *ivfCandMaxHeap) Push(x interface{}) { *h = append(*h, x.(ivfCandidate)) }
+func (h *ivfCandMaxHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
 }
 
 func NewIVFIndex(dimension int, metricType types.MetricType, nList, nIters int) *IVFIndex {
@@ -40,6 +68,15 @@ func NewIVFIndex(dimension int, metricType types.MetricType, nList, nIters int) 
 	if nprobe > nList {
 		nprobe = nList
 	}
+	if nprobe < 4 {
+		nprobe = 4
+	}
+	if nprobe > nList {
+		nprobe = nList
+	}
+	if nIters < 1 {
+		nIters = 20
+	}
 	return &IVFIndex{
 		dimension:  dimension,
 		metricType: metricType,
@@ -49,10 +86,19 @@ func NewIVFIndex(dimension int, metricType types.MetricType, nList, nIters int) 
 		nprobe:     nprobe,
 		docs:       make([][]float32, 0),
 		pks:        make([]string, 0),
+		pkToDocID:  make(map[string]int),
+		epochPool: sync.Pool{
+			New: func() interface{} {
+				v := make([]uint64, 0, 65536)
+				return &v
+			},
+		},
 	}
 }
 
 func (idx *IVFIndex) SetNProbe(nprobe int) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	if nprobe < 1 {
 		nprobe = 1
 	}
@@ -63,28 +109,37 @@ func (idx *IVFIndex) SetNProbe(nprobe int) {
 }
 
 func (idx *IVFIndex) Add(vector []float32, pk string) uint64 {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
 	v := make([]float32, len(vector))
 	copy(v, vector)
 	if idx.metricType == types.MetricTypeCosine {
 		v = metric.Normalize(v)
 	}
 
+	// Compute nearest centroid under RLock (centroids are read-only after Train)
+	var nearest int
+	idx.mu.RLock()
+	trained := idx.trained
+	if trained {
+		nearest = idx.findNearestCentroid(v)
+	}
+	idx.mu.RUnlock()
+
+	// Fast critical section: append to shared slices
+	idx.mu.Lock()
 	docID := uint64(len(idx.docs))
 	idx.docs = append(idx.docs, v)
 	idx.pks = append(idx.pks, pk)
+	idx.pkToDocID[pk] = len(idx.pks) - 1
 	idx.deleted = append(idx.deleted, false)
 	idx.liveCount++
 
-	if idx.trained {
-		nearest := idx.findNearestCentroid(v)
+	if trained {
 		idx.assignments = append(idx.assignments, nearest)
 		idx.inverted[nearest] = append(idx.inverted[nearest], int(docID))
 	} else {
 		idx.assignments = append(idx.assignments, -1)
 	}
+	idx.mu.Unlock()
 
 	return docID
 }
@@ -125,7 +180,7 @@ func (idx *IVFIndex) trainLocked() {
 	idx.trained = true
 }
 
-func (idx *IVFIndex) Search(query []float32, topK int) []flat.SearchResult {
+func (idx *IVFIndex) Search(query []float32, topK int) []types.SearchResult {
 	idx.trainOnce.Do(func() {
 		idx.mu.Lock()
 		if !idx.trained {
@@ -172,52 +227,58 @@ func (idx *IVFIndex) Search(query []float32, topK int) []flat.SearchResult {
 		return centroidDists[i].dist < centroidDists[j].dist
 	})
 
-	type candidate struct {
-		dist  float32
-		docID int
-		pk    string
+	topKHeap := &ivfCandMaxHeap{}
+	heap.Init(topKHeap)
+
+	epoch := atomic.AddUint64(&idx.currentEpoch, 1)
+	n := len(idx.docs)
+	epochPtr := idx.epochPool.Get().(*[]uint64)
+	var visited []uint64
+	if cap(*epochPtr) >= n {
+		visited = (*epochPtr)[:n]
+	} else {
+		visited = make([]uint64, n)
 	}
-	var candidates []candidate
-	seen := make(map[int]struct{})
+	defer func() {
+		*epochPtr = visited[:cap(visited)]
+		idx.epochPool.Put(epochPtr)
+	}()
 
 	for p := 0; p < nprobe; p++ {
 		clusterID := centroidDists[p].idx
 		for _, docIdx := range idx.inverted[clusterID] {
-			if _, ok := seen[docIdx]; ok {
+			if visited[docIdx] == epoch {
 				continue
 			}
 			if idx.deleted[docIdx] {
 				continue
 			}
-			seen[docIdx] = struct{}{}
+			visited[docIdx] = epoch
 			d := idx.distFn(q, idx.docs[docIdx])
-			candidates = append(candidates, candidate{
-				dist: d, docID: docIdx, pk: idx.pks[docIdx],
-			})
+			cand := ivfCandidate{dist: d, docID: docIdx, pk: idx.pks[docIdx]}
+			if topKHeap.Len() < topK {
+				heap.Push(topKHeap, cand)
+			} else if d < (*topKHeap)[0].dist {
+				heap.Pop(topKHeap)
+				heap.Push(topKHeap, cand)
+			}
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].dist < candidates[j].dist
-	})
-
-	if topK > len(candidates) {
-		topK = len(candidates)
-	}
-
-	results := make([]flat.SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		results[i] = flat.SearchResult{
-			DocID: uint64(candidates[i].docID),
-			Score: 1.0 / (1.0 + candidates[i].dist),
-			PK:    candidates[i].pk,
+	results := make([]types.SearchResult, topKHeap.Len())
+	for i := topKHeap.Len() - 1; i >= 0; i-- {
+		c := heap.Pop(topKHeap).(ivfCandidate)
+		results[i] = types.SearchResult{
+			DocID: uint64(c.docID),
+			Score: 1.0 / (1.0 + c.dist),
+			PK:    c.pk,
 		}
 	}
 	return results
 }
 
 func (idx *IVFIndex) SearchWithFilter(query []float32, topK int,
-	filterFn func(pk string) bool) []flat.SearchResult {
+	filterFn func(pk string) bool) []types.SearchResult {
 	idx.trainOnce.Do(func() {
 		idx.mu.Lock()
 		if !idx.trained {
@@ -262,45 +323,54 @@ func (idx *IVFIndex) SearchWithFilter(query []float32, topK int,
 		return cdists[i].dist < cdists[j].dist
 	})
 
-	type candidate struct {
-		dist  float32
-		docID int
-		pk    string
+	topKHeap := &ivfCandMaxHeap{}
+	heap.Init(topKHeap)
+
+	epoch := atomic.AddUint64(&idx.currentEpoch, 1)
+	n := len(idx.docs)
+	epochPtr := idx.epochPool.Get().(*[]uint64)
+	var visited []uint64
+	if cap(*epochPtr) >= n {
+		visited = (*epochPtr)[:n]
+	} else {
+		visited = make([]uint64, n)
 	}
-	var candidates []candidate
-	seen := make(map[int]struct{})
+	defer func() {
+		*epochPtr = visited[:cap(visited)]
+		idx.epochPool.Put(epochPtr)
+	}()
 
 	for p := 0; p < nprobe; p++ {
 		clusterID := cdists[p].cidx
 		for _, docIdx := range idx.inverted[clusterID] {
-			if _, ok := seen[docIdx]; ok {
+			if visited[docIdx] == epoch {
 				continue
 			}
-			seen[docIdx] = struct{}{}
+			visited[docIdx] = epoch
+			if idx.deleted[docIdx] {
+				continue
+			}
 			if !filterFn(idx.pks[docIdx]) {
 				continue
 			}
 			d := idx.distFn(q, idx.docs[docIdx])
-			candidates = append(candidates, candidate{
-				dist: d, docID: docIdx, pk: idx.pks[docIdx],
-			})
+			cand := ivfCandidate{dist: d, docID: docIdx, pk: idx.pks[docIdx]}
+			if topKHeap.Len() < topK {
+				heap.Push(topKHeap, cand)
+			} else if d < (*topKHeap)[0].dist {
+				heap.Pop(topKHeap)
+				heap.Push(topKHeap, cand)
+			}
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].dist < candidates[j].dist
-	})
-
-	if topK > len(candidates) {
-		topK = len(candidates)
-	}
-
-	results := make([]flat.SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		results[i] = flat.SearchResult{
-			DocID: uint64(candidates[i].docID),
-			Score: 1.0 / (1.0 + candidates[i].dist),
-			PK:    candidates[i].pk,
+	results := make([]types.SearchResult, topKHeap.Len())
+	for i := topKHeap.Len() - 1; i >= 0; i-- {
+		c := heap.Pop(topKHeap).(ivfCandidate)
+		results[i] = types.SearchResult{
+			DocID: uint64(c.docID),
+			Score: 1.0 / (1.0 + c.dist),
+			PK:    c.pk,
 		}
 	}
 	return results
@@ -310,14 +380,14 @@ func (idx *IVFIndex) Delete(pk string) bool {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	for i, p := range idx.pks {
-		if p == pk && !idx.deleted[i] {
-			idx.deleted[i] = true
-			idx.liveCount--
-			return true
-		}
+	i, ok := idx.pkToDocID[pk]
+	if !ok || idx.deleted[i] {
+		return false
 	}
-	return false
+	idx.deleted[i] = true
+	idx.liveCount--
+	delete(idx.pkToDocID, pk)
+	return true
 }
 
 func (idx *IVFIndex) Size() int {
@@ -327,7 +397,232 @@ func (idx *IVFIndex) Size() int {
 }
 
 func (idx *IVFIndex) Dimension() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
 	return idx.dimension
+}
+
+func (idx *IVFIndex) MemoryBytes() uint64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	var total uint64
+	for _, c := range idx.centroids {
+		total += uint64(len(c)) * 4
+	}
+	for _, v := range idx.docs {
+		total += uint64(len(v)) * 4
+	}
+	for _, pk := range idx.pks {
+		total += uint64(len(pk))
+	}
+	total += uint64(len(idx.assignments)) * 4
+	total += uint64(len(idx.deleted))
+	for _, inv := range idx.inverted {
+		total += uint64(len(inv)) * 4
+	}
+	return total
+}
+
+func (idx *IVFIndex) Save(w io.Writer) error {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	if err := persist.WriteHeader(bw, persist.FileHeader{Magic: persist.MagicNumber, Version: 1, IndexType: persist.IndexTypeIVF}); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.dimension); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, int(idx.metricType)); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.nList); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.nIters); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.nprobe); err != nil {
+		return err
+	}
+	if err := persist.WriteInt(bw, idx.liveCount); err != nil {
+		return err
+	}
+
+	if err := persist.WriteUint32(bw, uint32(len(idx.centroids))); err != nil {
+		return err
+	}
+	for _, c := range idx.centroids {
+		if err := persist.WriteFloat32Slice(bw, c); err != nil {
+			return err
+		}
+	}
+
+	if err := persist.WriteUint32(bw, uint32(len(idx.docs))); err != nil {
+		return err
+	}
+	for _, v := range idx.docs {
+		if err := persist.WriteFloat32Slice(bw, v); err != nil {
+			return err
+		}
+	}
+
+	if err := persist.WriteUint32(bw, uint32(len(idx.pks))); err != nil {
+		return err
+	}
+	for _, pk := range idx.pks {
+		if err := persist.WriteString(bw, pk); err != nil {
+			return err
+		}
+	}
+
+	if err := persist.WriteIntSlice(bw, idx.assignments); err != nil {
+		return err
+	}
+
+	if err := persist.WriteUint32(bw, uint32(len(idx.inverted))); err != nil {
+		return err
+	}
+	for _, inv := range idx.inverted {
+		if err := persist.WriteIntSlice(bw, inv); err != nil {
+			return err
+		}
+	}
+
+	if err := persist.WriteByte(bw, boolToByte(idx.trained)); err != nil {
+		return err
+	}
+	return persist.WriteBoolSlice(bw, idx.deleted)
+}
+
+func (idx *IVFIndex) Load(r io.Reader) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	br := bufio.NewReader(r)
+
+	h, err := persist.ReadHeader(br)
+	if err != nil {
+		return err
+	}
+	if h.IndexType != persist.IndexTypeIVF {
+		return io.ErrUnexpectedEOF
+	}
+
+	dim, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	mt, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	nList, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	nIters, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	nprobe, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+	liveCount, err := persist.ReadInt(br)
+	if err != nil {
+		return err
+	}
+
+	centCount, err := persist.ReadUint32(br)
+	if err != nil {
+		return err
+	}
+	centroids := make([][]float32, centCount)
+	for i := range centroids {
+		centroids[i], err = persist.ReadFloat32Slice(br)
+		if err != nil {
+			return err
+		}
+	}
+
+	docCount, err := persist.ReadUint32(br)
+	if err != nil {
+		return err
+	}
+	docs := make([][]float32, docCount)
+	for i := range docs {
+		docs[i], err = persist.ReadFloat32Slice(br)
+		if err != nil {
+			return err
+		}
+	}
+
+	pkCount, err := persist.ReadUint32(br)
+	if err != nil {
+		return err
+	}
+	pks := make([]string, pkCount)
+	for i := range pks {
+		pks[i], err = persist.ReadString(br)
+		if err != nil {
+			return err
+		}
+	}
+
+	assignments, err := persist.ReadIntSlice(br)
+	if err != nil {
+		return err
+	}
+
+	invCount, err := persist.ReadUint32(br)
+	if err != nil {
+		return err
+	}
+	inverted := make([][]int, invCount)
+	for i := range inverted {
+		inverted[i], err = persist.ReadIntSlice(br)
+		if err != nil {
+			return err
+		}
+	}
+
+	trainedBuf := make([]byte, 1)
+	if _, err := br.Read(trainedBuf); err != nil {
+		return err
+	}
+
+	deleted, err := persist.ReadBoolSlice(br)
+	if err != nil {
+		return err
+	}
+
+	idx.dimension = dim
+	idx.metricType = types.MetricType(mt)
+	idx.distFn = metric.GetDistanceFunc(idx.metricType)
+	idx.nList = nList
+	idx.nIters = nIters
+	idx.nprobe = nprobe
+	idx.liveCount = liveCount
+	idx.centroids = centroids
+	idx.docs = docs
+	idx.pks = pks
+	idx.assignments = assignments
+	idx.inverted = inverted
+	idx.trained = trainedBuf[0] != 0
+	idx.deleted = deleted
+	return nil
+}
+
+func boolToByte(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (idx *IVFIndex) Close() error {

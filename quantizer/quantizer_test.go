@@ -4,6 +4,7 @@ import (
 	"testing"
 )
 
+// TestFP16Quantizer 验证 FP16 量化器编解码精度和元数据
 func TestFP16Quantizer(t *testing.T) {
 	q := NewFP16Quantizer()
 	vec := []float32{1.5, -2.0, 0.0, 3.14159}
@@ -33,6 +34,7 @@ func TestFP16Quantizer(t *testing.T) {
 	}
 }
 
+// TestInt8Quantizer 验证 Int8 量化器训练和编解码精度
 func TestInt8Quantizer(t *testing.T) {
 	q := NewInt8Quantizer(3, false)
 
@@ -58,6 +60,7 @@ func TestInt8Quantizer(t *testing.T) {
 	}
 }
 
+// TestInt4Quantizer 验证 Int4 量化器训练和编解码精度
 func TestInt4Quantizer(t *testing.T) {
 	q := NewInt4Quantizer(4, false)
 
@@ -82,6 +85,7 @@ func TestInt4Quantizer(t *testing.T) {
 	}
 }
 
+// TestInt8QuantizerWithRotation 验证 Int8 量化器带随机旋转的编解码
 func TestInt8QuantizerWithRotation(t *testing.T) {
 	q := NewInt8Quantizer(4, true)
 	vec := []float32{0.5, -0.3, 0.8, -0.1}
@@ -95,6 +99,7 @@ func TestInt8QuantizerWithRotation(t *testing.T) {
 	}
 }
 
+// TestFloat16Conversions 验证 float32 与 float16 双向转换正确性
 func TestFloat16Conversions(t *testing.T) {
 	tests := []float32{0.0, 1.0, -1.0, 0.5, -0.5, 3.14159, 65504.0, -65504.0}
 	for _, f := range tests {
@@ -106,6 +111,7 @@ func TestFloat16Conversions(t *testing.T) {
 	}
 }
 
+// TestQuantizeByType 验证按量化类型执行量化编码
 func TestQuantizeByType(t *testing.T) {
 	vec := []float32{0.5, -0.3, 0.8}
 
@@ -118,6 +124,7 @@ func TestQuantizeByType(t *testing.T) {
 	}
 }
 
+// TestRandomRotation 验证随机旋转矩阵各行归一化
 func TestRandomRotation(t *testing.T) {
 	dim := 4
 	mat := computeRandomRotation(dim, 42)

@@ -3,43 +3,37 @@ package param
 import "github.com/third-apps/go-zvec/types"
 
 type IndexParams struct {
-	Type types.IndexType
-	// Common
-	MetricType   types.MetricType
-	QuantizeType types.QuantizeType
-	EnableRotate bool
-	// HNSW
-	M                   int
-	EFConstruction      int
-	UseContiguousMemory bool
-	// IVF
-	NList   int
-	NIters  int
-	UseSOAR bool
-	// DiskANN
-	MaxDegree  int
-	ListSize   int
-	PQChunkNum int
-	Alpha      float64
-	// Vamana
-	VamanaMaxDegree      int
-	VamanaSearchListSize int
-	VamanaAlpha          float32
-	SaturateGraph        bool
-	// HNSW RaBitQ
-	TotalBits   int
-	NumClusters int
-	SampleCount int
-	// FTS
-	FtsTokenizer   string
-	FtsFilters     []string
-	FtsExtraParams string
-	// Invert
+	Type                    types.IndexType
+	MetricType              types.MetricType
+	QuantizeType            types.QuantizeType
+	EnableRotate            bool
+	M                       int
+	EFConstruction          int
+	UseContiguousMemory     bool
+	NList                   int
+	NIters                  int
+	UseSOAR                 bool
+	MaxDegree               int
+	ListSize                int
+	PQChunkNum              int
+	Alpha                   float64
+	VamanaMaxDegree         int
+	VamanaSearchListSize    int
+	VamanaAlpha             float32
+	SaturateGraph           bool
+	TotalBits               int
+	NumClusters             int
+	SampleCount             int
+	FtsTokenizer            string
+	FtsFilters              []string
+	FtsExtraParams          string
 	EnableRangeOptimization bool
 	EnableExtendedWildcard  bool
-	// Flat
-	MajorOrder string
+	MajorOrder              string
 }
+
+func (p *IndexParams) GetIndexType() types.IndexType   { return p.Type }
+func (p *IndexParams) GetMetricType() types.MetricType { return p.MetricType }
 
 func NewHNSWIndexParams(metric types.MetricType, m, efConstruction int) *IndexParams {
 	return &IndexParams{

@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package wal;
+
+option go_package = "github.com/third-apps/go-zvec/wal/proto";
+
+message Value {
+  bool null = 1;
+  uint32 type = 2;
+  bool bool_val = 3;
+  int32 int32_val = 4;
+  uint32 uint32_val = 5;
+  int64 int64_val = 6;
+  uint64 uint64_val = 7;
+  float float_val = 8;
+  double double_val = 9;
+  string string_val = 10;
+  bytes binary_val = 11;
+}
+
+message VectorValue {
+  repeated float float32s = 1;
+  repeated double float64s = 2;
+  repeated int32 int8s = 3;
+  repeated int32 int16s = 4;
+  repeated int32 int32s = 5;
+  repeated int32 int4s = 6;
+  repeated uint32 float16s = 7;
+}
+
+message SparseVectorValue {
+  repeated uint32 indices = 1;
+  repeated float values = 2;
+}
+
+message Doc {
+  string id = 1;
+  float score = 2;
+  uint64 doc_id = 3;
+  map<string, Value> fields = 4;
+  map<string, VectorValue> vectors = 5;
+  map<string, SparseVectorValue> sparse_vectors = 6;
+}
+
+message LogEntry {
+  uint64 lsn = 1;
+  string op = 2;
+  string id = 3;
+  Doc doc = 4;
+  repeated string ids = 5;
+  uint32 crc32 = 6;
+}

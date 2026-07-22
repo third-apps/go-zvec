@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// TestMemoryStorageWriteAndRead 验证内存存储写入和读取数据
 func TestMemoryStorageWriteAndRead(t *testing.T) {
 	s := NewMemoryStorage()
 	data := []byte("hello world")
@@ -29,6 +30,7 @@ func TestMemoryStorageWriteAndRead(t *testing.T) {
 	}
 }
 
+// TestMemoryStorageReadOutOfBounds 验证内存存储越界读取返回错误
 func TestMemoryStorageReadOutOfBounds(t *testing.T) {
 	s := NewMemoryStorage()
 	buf := make([]byte, 5)
@@ -38,6 +40,7 @@ func TestMemoryStorageReadOutOfBounds(t *testing.T) {
 	}
 }
 
+// TestMemoryStorageWriteGrow 验证内存存储偏移写入自动扩展
 func TestMemoryStorageWriteGrow(t *testing.T) {
 	s := NewMemoryStorage()
 	if err := s.Write(100, []byte("A")); err != nil {
@@ -54,6 +57,7 @@ func TestMemoryStorageWriteGrow(t *testing.T) {
 	}
 }
 
+// TestMemoryStorageWriteOverwrite 验证内存存储覆盖写入
 func TestMemoryStorageWriteOverwrite(t *testing.T) {
 	s := NewMemoryStorage()
 	s.Write(0, []byte("hello"))
@@ -65,6 +69,7 @@ func TestMemoryStorageWriteOverwrite(t *testing.T) {
 	}
 }
 
+// TestMemoryStorageSyncAndClose 验证内存存储 Sync 和 Close 操作
 func TestMemoryStorageSyncAndClose(t *testing.T) {
 	s := NewMemoryStorage()
 	if err := s.Sync(); err != nil {
@@ -79,6 +84,7 @@ func TestMemoryStorageSyncAndClose(t *testing.T) {
 	}
 }
 
+// TestMemoryStorageMultipleWrites 验证内存存储多次连续写入数据拼接
 func TestMemoryStorageMultipleWrites(t *testing.T) {
 	s := NewMemoryStorage()
 	s.Write(0, []byte("aaa"))
@@ -91,6 +97,7 @@ func TestMemoryStorageMultipleWrites(t *testing.T) {
 	}
 }
 
+// TestFileStorageCreateNew 验证文件存储创建新文件并写入
 func TestFileStorageCreateNew(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.bin")
@@ -113,6 +120,7 @@ func TestFileStorageCreateNew(t *testing.T) {
 	}
 }
 
+// TestFileStorageReadWrite 验证文件存储写入后只读模式读取
 func TestFileStorageReadWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.bin")
@@ -136,6 +144,7 @@ func TestFileStorageReadWrite(t *testing.T) {
 	}
 }
 
+// TestFileStorageAppendExisting 验证文件存储追加写入已有文件
 func TestFileStorageAppendExisting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "append.bin")
@@ -161,6 +170,7 @@ func TestFileStorageAppendExisting(t *testing.T) {
 	}
 }
 
+// TestFileStorageCreateDir 验证文件存储自动创建不存在的目录
 func TestFileStorageCreateDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sub", "dir")
 	path := filepath.Join(dir, "test.bin")
@@ -174,6 +184,7 @@ func TestFileStorageCreateDir(t *testing.T) {
 	}
 }
 
+// TestFileStorageSync 验证文件存储 Sync 刷盘操作
 func TestFileStorageSync(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sync.bin")

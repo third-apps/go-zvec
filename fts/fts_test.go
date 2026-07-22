@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestStandardTokenizer 验证标准分词器分词和转小写
 func TestStandardTokenizer(t *testing.T) {
 	tok := NewStandardTokenizer()
 	tokens := tok.Tokenize("Hello World! This is a Test.")
@@ -19,6 +20,7 @@ func TestStandardTokenizer(t *testing.T) {
 	}
 }
 
+// TestWhitespaceTokenizer 验证空白分词器按空格分词
 func TestWhitespaceTokenizer(t *testing.T) {
 	tok := NewWhitespaceTokenizer()
 	tokens := tok.Tokenize("hello   world foo")
@@ -27,6 +29,7 @@ func TestWhitespaceTokenizer(t *testing.T) {
 	}
 }
 
+// TestInvertedIndexBasic 验证倒排索引添加文档、搜索和文档频率统计
 func TestInvertedIndexBasic(t *testing.T) {
 	idx := NewInvertedIndex()
 	idx.AddDocument(0, strings.Fields("hello world"))
@@ -47,6 +50,7 @@ func TestInvertedIndexBasic(t *testing.T) {
 	}
 }
 
+// TestFTSIndexSearch 验证全文搜索索引 BM25 搜索排序
 func TestFTSIndexSearch(t *testing.T) {
 	idx := NewFTSIndex(NewStandardTokenizer())
 	idx.Index(0, "the quick brown fox jumps over the lazy dog")
@@ -66,6 +70,7 @@ func TestFTSIndexSearch(t *testing.T) {
 	}
 }
 
+// TestFTSIndexBooleanAND 验证全文搜索布尔 AND 查询
 func TestFTSIndexBooleanAND(t *testing.T) {
 	idx := NewFTSIndex(NewStandardTokenizer())
 	idx.Index(0, "the quick brown fox")
@@ -80,6 +85,7 @@ func TestFTSIndexBooleanAND(t *testing.T) {
 	}
 }
 
+// TestFTSIndexBooleanOR 验证全文搜索布尔 OR 查询
 func TestFTSIndexBooleanOR(t *testing.T) {
 	idx := NewFTSIndex(NewStandardTokenizer())
 	idx.Index(0, "quick fox")
@@ -92,9 +98,10 @@ func TestFTSIndexBooleanOR(t *testing.T) {
 	}
 }
 
+// TestBM25Scorer 验证 BM25 评分器计算正分
 func TestBM25Scorer(t *testing.T) {
 	scorer := NewBM25Scorer()
-	scorer.UpdateStats([]int{5, 10, 15})
+	scorer.SetAvgDocLen(10.0)
 
 	score := scorer.Score(0, 5, 2, 3, 100)
 	if score <= 0 {
@@ -102,6 +109,7 @@ func TestBM25Scorer(t *testing.T) {
 	}
 }
 
+// TestFTSIndexEmpty 验证空全文搜索索引搜索返回 nil
 func TestFTSIndexEmpty(t *testing.T) {
 	idx := NewFTSIndex(NewStandardTokenizer())
 	results := idx.Search("anything", 5)
@@ -110,6 +118,7 @@ func TestFTSIndexEmpty(t *testing.T) {
 	}
 }
 
+// TestFTSIndexNoMatch 验证全文搜索无匹配时返回空结果
 func TestFTSIndexNoMatch(t *testing.T) {
 	idx := NewFTSIndex(NewStandardTokenizer())
 	idx.Index(0, "hello world")

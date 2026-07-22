@@ -1,9 +1,0 @@
-{"op":"INSERT","id":"doc_1","doc":{"ID":"doc_1","Score":0,"DocID":0}}
-{"op":"INSERT","id":"doc_2","doc":{"ID":"doc_2","Score":0,"DocID":1}}
-{"op":"INSERT","id":"doc_3","doc":{"ID":"doc_3","Score":0,"DocID":2}}
-{"op":"INSERT","id":"doc_1","doc":{"ID":"doc_1","Score":0,"DocID":0}}
-{"op":"INSERT","id":"doc_2","doc":{"ID":"doc_2","Score":0,"DocID":1}}
-{"op":"INSERT","id":"doc_3","doc":{"ID":"doc_3","Score":0,"DocID":2}}
-{"op":"INSERT","id":"doc_1","doc":{"ID":"doc_1","Score":0,"DocID":0}}
-{"op":"INSERT","id":"doc_2","doc":{"ID":"doc_2","Score":0,"DocID":1}}
-{"op":"INSERT","id":"doc_3","doc":{"ID":"doc_3","Score":0,"DocID":2}}

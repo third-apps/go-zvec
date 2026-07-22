@@ -11,6 +11,7 @@ import (
 	"github.com/third-apps/go-zvec/types"
 )
 
+// TestCompileFilter_GreaterEqual 验证过滤表达式编译：大于等于
 func TestCompileFilter_GreaterEqual(t *testing.T) {
 	fn := compileFilter("age >= 30")
 	s := testSchema()
@@ -27,6 +28,7 @@ func TestCompileFilter_GreaterEqual(t *testing.T) {
 	_ = s
 }
 
+// TestCompileFilter_LessEqual 验证过滤表达式编译：小于等于
 func TestCompileFilter_LessEqual(t *testing.T) {
 	fn := compileFilter("score <= 50.5")
 	d := doc.NewDoc("x")
@@ -41,6 +43,7 @@ func TestCompileFilter_LessEqual(t *testing.T) {
 	}
 }
 
+// TestCompileFilter_Greater 验证过滤表达式编译：大于
 func TestCompileFilter_Greater(t *testing.T) {
 	fn := compileFilter("count > 10")
 	d := doc.NewDoc("x")
@@ -55,6 +58,7 @@ func TestCompileFilter_Greater(t *testing.T) {
 	}
 }
 
+// TestCompileFilter_Less 验证过滤表达式编译：小于
 func TestCompileFilter_Less(t *testing.T) {
 	fn := compileFilter("price < 100")
 	d := doc.NewDoc("x")
@@ -69,6 +73,7 @@ func TestCompileFilter_Less(t *testing.T) {
 	}
 }
 
+// TestCompileFilter_Equal 验证过滤表达式编译：双等号等于
 func TestCompileFilter_Equal(t *testing.T) {
 	fn := compileFilter("name == alice")
 	d := doc.NewDoc("x")
@@ -83,6 +88,7 @@ func TestCompileFilter_Equal(t *testing.T) {
 	}
 }
 
+// TestCompileFilter_SingleEqual 验证过滤表达式编译：单等号等于
 func TestCompileFilter_SingleEqual(t *testing.T) {
 	fn := compileFilter("name = bob")
 	d := doc.NewDoc("x")
@@ -92,6 +98,7 @@ func TestCompileFilter_SingleEqual(t *testing.T) {
 	}
 }
 
+// TestCompileFilter_NotEqual 验证过滤表达式编译：不等于
 func TestCompileFilter_NotEqual(t *testing.T) {
 	fn := compileFilter("status != active")
 	d := doc.NewDoc("x")
@@ -106,6 +113,7 @@ func TestCompileFilter_NotEqual(t *testing.T) {
 	}
 }
 
+// TestCompileFilter_NullField 验证过滤表达式编译：缺失字段不匹配
 func TestCompileFilter_NullField(t *testing.T) {
 	fn := compileFilter("age >= 30")
 	d := doc.NewDoc("x")
@@ -114,6 +122,7 @@ func TestCompileFilter_NullField(t *testing.T) {
 	}
 }
 
+// TestCompileFilter_EmptyFilter 验证过滤表达式编译：空过滤匹配所有文档
 func TestCompileFilter_EmptyFilter(t *testing.T) {
 	fn := compileFilter("")
 	d := doc.NewDoc("x")
@@ -122,6 +131,7 @@ func TestCompileFilter_EmptyFilter(t *testing.T) {
 	}
 }
 
+// TestMatchFilterDelegation 验证 matchFilter 委托函数的过滤匹配逻辑
 func TestMatchFilterDelegation(t *testing.T) {
 	s := testSchema()
 	d := doc.NewDoc("x")
@@ -138,6 +148,7 @@ func TestMatchFilterDelegation(t *testing.T) {
 	}
 }
 
+// TestUpdateIndexConsistency 验证 Upsert 更新文档后索引一致性
 func TestUpdateIndexConsistency(t *testing.T) {
 	path := "./test_update_idx"
 	defer os.RemoveAll(path)
@@ -178,6 +189,7 @@ func TestUpdateIndexConsistency(t *testing.T) {
 	}
 }
 
+// TestMultiQuery 验证 Collection 多向量字段联合查询功能
 func TestMultiQuery(t *testing.T) {
 	path := "./test_multi_q"
 	defer os.RemoveAll(path)
@@ -229,6 +241,7 @@ func TestMultiQuery(t *testing.T) {
 	}
 }
 
+// TestMultiQueryWithFilter 验证 Collection 多向量字段联合查询带过滤条件
 func TestMultiQueryWithFilter(t *testing.T) {
 	path := "./test_multi_filter"
 	defer os.RemoveAll(path)
@@ -277,6 +290,7 @@ func TestMultiQueryWithFilter(t *testing.T) {
 	}
 }
 
+// TestFTSQuery 验证 Collection 全文搜索查询功能
 func TestFTSQuery(t *testing.T) {
 	path := "./test_fts_q"
 	defer os.RemoveAll(path)
@@ -322,6 +336,7 @@ func TestFTSQuery(t *testing.T) {
 	}
 }
 
+// TestDeleteByFilter 验证 Collection 按过滤条件删除文档
 func TestDeleteByFilter(t *testing.T) {
 	path := "./test_del_filter"
 	defer os.RemoveAll(path)
@@ -343,6 +358,7 @@ func TestDeleteByFilter(t *testing.T) {
 	}
 }
 
+// TestCollectionOpen 验证 Collection 关闭后重新打开
 func TestCollectionOpen(t *testing.T) {
 	path := "./test_coll_open"
 	defer os.RemoveAll(path)
@@ -364,6 +380,7 @@ func TestCollectionOpen(t *testing.T) {
 	}
 }
 
+// TestCollectionSchemaGetter 验证 Collection Schema 获取器
 func TestCollectionSchemaGetter(t *testing.T) {
 	path := "./test_schema_getter"
 	defer os.RemoveAll(path)
@@ -378,6 +395,7 @@ func TestCollectionSchemaGetter(t *testing.T) {
 	}
 }
 
+// TestCollectionOptionsGetter 验证 Collection Options 获取器
 func TestCollectionOptionsGetter(t *testing.T) {
 	path := "./test_opts_getter"
 	defer os.RemoveAll(path)
@@ -392,6 +410,7 @@ func TestCollectionOptionsGetter(t *testing.T) {
 	}
 }
 
+// TestCollectionAddColumn 验证 Collection 动态添加列
 func TestCollectionAddColumn(t *testing.T) {
 	path := "./test_add_col"
 	defer os.RemoveAll(path)
@@ -406,6 +425,7 @@ func TestCollectionAddColumn(t *testing.T) {
 	}
 }
 
+// TestCollectionDropColumn 验证 Collection 动态删除列
 func TestCollectionDropColumn(t *testing.T) {
 	path := "./test_drop_col"
 	defer os.RemoveAll(path)
@@ -419,6 +439,7 @@ func TestCollectionDropColumn(t *testing.T) {
 	}
 }
 
+// TestCollectionAlterColumn 验证 Collection 动态修改列
 func TestCollectionAlterColumn(t *testing.T) {
 	path := "./test_alt_col"
 	defer os.RemoveAll(path)

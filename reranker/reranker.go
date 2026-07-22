@@ -1,14 +1,13 @@
 package reranker
 
 import (
-	"math"
 	"sort"
 
-	"github.com/third-apps/go-zvec/index/flat"
+	"github.com/third-apps/go-zvec/types"
 )
 
 type Reranker interface {
-	Rerank(results [][]flat.SearchResult, topN int) []flat.SearchResult
+	Rerank(results [][]types.SearchResult, topN int) []types.SearchResult
 }
 
 type RRFParams struct {
@@ -22,7 +21,7 @@ func NewRRFParams(rankConstant int) *RRFParams {
 	return &RRFParams{RankConstant: rankConstant}
 }
 
-func (p *RRFParams) Rerank(results [][]flat.SearchResult, topN int) []flat.SearchResult {
+func (p *RRFParams) Rerank(results [][]types.SearchResult, topN int) []types.SearchResult {
 	type scoredDoc struct {
 		pk    string
 		docID uint64
@@ -57,9 +56,9 @@ func (p *RRFParams) Rerank(results [][]flat.SearchResult, topN int) []flat.Searc
 		topN = len(sorted)
 	}
 
-	results_ := make([]flat.SearchResult, topN)
+	results_ := make([]types.SearchResult, topN)
 	for i := 0; i < topN; i++ {
-		results_[i] = flat.SearchResult{
+		results_[i] = types.SearchResult{
 			DocID: sorted[i].docID,
 			Score: float32(sorted[i].score),
 			PK:    sorted[i].pk,
@@ -76,7 +75,7 @@ func NewWeightedParams(weights []float64) *WeightedParams {
 	return &WeightedParams{Weights: weights}
 }
 
-func (p *WeightedParams) Rerank(results [][]flat.SearchResult, topN int) []flat.SearchResult {
+func (p *WeightedParams) Rerank(results [][]types.SearchResult, topN int) []types.SearchResult {
 	type scoredDoc struct {
 		pk    string
 		docID uint64
@@ -85,7 +84,7 @@ func (p *WeightedParams) Rerank(results [][]flat.SearchResult, topN int) []flat.
 
 	scores := make(map[string]*scoredDoc)
 
-	normalizedResults := make([][]flat.SearchResult, len(results))
+	normalizedResults := make([][]types.SearchResult, len(results))
 	for i, list := range results {
 		normalizedResults[i] = normalizeScores(list)
 	}
@@ -119,9 +118,9 @@ func (p *WeightedParams) Rerank(results [][]flat.SearchResult, topN int) []flat.
 		topN = len(sorted)
 	}
 
-	results_ := make([]flat.SearchResult, topN)
+	results_ := make([]types.SearchResult, topN)
 	for i := 0; i < topN; i++ {
-		results_[i] = flat.SearchResult{
+		results_[i] = types.SearchResult{
 			DocID: sorted[i].docID,
 			Score: float32(sorted[i].score),
 			PK:    sorted[i].pk,
@@ -130,28 +129,38 @@ func (p *WeightedParams) Rerank(results [][]flat.SearchResult, topN int) []flat.
 	return results_
 }
 
-func normalizeScores(results []flat.SearchResult) []flat.SearchResult {
+func normalizeScores(results []types.SearchResult) []types.SearchResult {
 	if len(results) == 0 {
 		return results
 	}
 
-	var maxScore float64
+	var minScore, maxScore float64
+	minScore = float64(results[0].Score)
+	maxScore = float64(results[0].Score)
 	for _, r := range results {
-		s := math.Abs(float64(r.Score))
+		s := float64(r.Score)
+		if s < minScore {
+			minScore = s
+		}
 		if s > maxScore {
 			maxScore = s
 		}
 	}
 
-	if maxScore == 0 {
-		return results
+	rangeScore := maxScore - minScore
+	if rangeScore == 0 {
+		normalized := make([]types.SearchResult, len(results))
+		for i, r := range results {
+			normalized[i] = types.SearchResult{DocID: r.DocID, Score: 1.0, PK: r.PK}
+		}
+		return normalized
 	}
 
-	normalized := make([]flat.SearchResult, len(results))
+	normalized := make([]types.SearchResult, len(results))
 	for i, r := range results {
-		normalized[i] = flat.SearchResult{
+		normalized[i] = types.SearchResult{
 			DocID: r.DocID,
-			Score: float32(float64(r.Score) / maxScore),
+			Score: float32((float64(r.Score) - minScore) / rangeScore),
 			PK:    r.PK,
 		}
 	}
@@ -159,17 +168,17 @@ func normalizeScores(results []flat.SearchResult) []flat.SearchResult {
 }
 
 type CallbackParams struct {
-	Callback func(results [][]flat.SearchResult, topN int) []flat.SearchResult
+	Callback func(results [][]types.SearchResult, topN int) []types.SearchResult
 }
 
-func (p *CallbackParams) Rerank(results [][]flat.SearchResult, topN int) []flat.SearchResult {
+func (p *CallbackParams) Rerank(results [][]types.SearchResult, topN int) []types.SearchResult {
 	if p.Callback == nil {
 		return nil
 	}
 	return p.Callback(results, topN)
 }
 
-func Rerank(params interface{}, results [][]flat.SearchResult, topN int) []flat.SearchResult {
+func Rerank(params interface{}, results [][]types.SearchResult, topN int) []types.SearchResult {
 	switch p := params.(type) {
 	case *RRFParams:
 		return p.Rerank(results, topN)

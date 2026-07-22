@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"sync"
 	"time"
 
 	zvec "github.com/third-apps/go-zvec"
@@ -48,6 +50,7 @@ func main() {
 	benchVamana(vectors, queryVecs)
 	benchHNSWRabitq(vectors, queryVecs)
 	benchConcurrentSearch(vectors, queryVecs)
+	benchRealConcurrentSearch(vectors, queryVecs)
 
 	fmt.Println("\n============================================")
 	fmt.Println("  基准测试完成 / Benchmark Complete")
@@ -60,14 +63,33 @@ type benchResult struct {
 	searchMs    int64
 	qps         float64
 	avgLatency  float64
+	p50         float64
+	p95         float64
+	p99         float64
 	resultCount int
 }
 
-func printResult(r benchResult) {
+func printResult(r benchResult, memBytes uint64) {
 	fmt.Printf("\n[%s]\n", r.indexType)
 	fmt.Printf("  插入耗时: %d ms (%.0f docs/s)\n", r.insertMs, float64(numDocs)/float64(r.insertMs)*1000)
 	fmt.Printf("  搜索耗时: %d ms (%d queries)\n", r.searchMs, numQuery)
-	fmt.Printf("  QPS: %.0f | 平均延迟: %.3f ms | 结果数: %d\n", r.qps, r.avgLatency, r.resultCount)
+	fmt.Printf("  QPS: %.0f | 平均延迟: %.3f ms\n", r.qps, r.avgLatency)
+	fmt.Printf("  P50: %.3f ms | P95: %.3f ms | P99: %.3f ms | 结果数: %d\n", r.p50, r.p95, r.p99, r.resultCount)
+	fmt.Printf("  内存占用: %.2f MB\n", float64(memBytes)/1024/1024)
+}
+
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := p / 100.0 * float64(len(sorted)-1)
+	lower := int(idx)
+	upper := lower + 1
+	if upper >= len(sorted) {
+		return sorted[len(sorted)-1]
+	}
+	frac := idx - float64(lower)
+	return sorted[lower]*(1-frac) + sorted[upper]*frac
 }
 
 func generateVectors(n, d int) [][]float32 {
@@ -125,10 +147,12 @@ func insertBenchData(c *collection.Collection, vectors [][]float32) int64 {
 	return time.Since(start).Milliseconds()
 }
 
-func runSearchBench(c *collection.Collection, queryVecs [][]float32) (int64, float64, float64, int) {
-	start := time.Now()
+func runSearchBench(c *collection.Collection, queryVecs [][]float32) (int64, float64, float64, float64, float64, float64, int) {
+	latencies := make([]float64, numQuery)
 	count := 0
+	start := time.Now()
 	for i := 0; i < numQuery; i++ {
+		qStart := time.Now()
 		results, st := c.Query(&query.SearchQuery{
 			Target: query.QueryTarget{
 				FieldName: "vec",
@@ -136,6 +160,7 @@ func runSearchBench(c *collection.Collection, queryVecs [][]float32) (int64, flo
 			},
 			TopK: topK,
 		})
+		latencies[i] = float64(time.Since(qStart).Nanoseconds()) / 1e6
 		if !st.OK() {
 			log.Fatalf("查询失败: %v", st.Error())
 		}
@@ -145,7 +170,15 @@ func runSearchBench(c *collection.Collection, queryVecs [][]float32) (int64, flo
 	totalMs := elapsed.Milliseconds()
 	qps := float64(numQuery) / elapsed.Seconds()
 	avgLatency := float64(totalMs) / float64(numQuery)
-	return totalMs, qps, avgLatency, count
+
+	sorted := make([]float64, numQuery)
+	copy(sorted, latencies)
+	sort.Float64s(sorted)
+	p50 := percentile(sorted, 50)
+	p95 := percentile(sorted, 95)
+	p99 := percentile(sorted, 99)
+
+	return totalMs, qps, avgLatency, p50, p95, p99, count
 }
 
 type IndexParams struct {
@@ -159,8 +192,8 @@ func benchFlat(vectors, queryVecs [][]float32) {
 	defer os.RemoveAll(dir)
 
 	insertMs := insertBenchData(c, vectors)
-	searchMs, qps, avgLat, cnt := runSearchBench(c, queryVecs)
-	printResult(benchResult{"Flat", insertMs, searchMs, qps, avgLat, cnt})
+	searchMs, qps, avgLat, p50, p95, p99, cnt := runSearchBench(c, queryVecs)
+	printResult(benchResult{"Flat", insertMs, searchMs, qps, avgLat, p50, p95, p99, cnt}, c.Stats().TotalMemoryBytes)
 }
 
 func benchHNSW(vectors, queryVecs [][]float32) {
@@ -170,19 +203,19 @@ func benchHNSW(vectors, queryVecs [][]float32) {
 	defer os.RemoveAll(dir)
 
 	insertMs := insertBenchData(c, vectors)
-	searchMs, qps, avgLat, cnt := runSearchBench(c, queryVecs)
-	printResult(benchResult{"HNSW (M=16, efConstruction=200)", insertMs, searchMs, qps, avgLat, cnt})
+	searchMs, qps, avgLat, p50, p95, p99, cnt := runSearchBench(c, queryVecs)
+	printResult(benchResult{"HNSW (M=16, efConstruction=200)", insertMs, searchMs, qps, avgLat, p50, p95, p99, cnt}, c.Stats().TotalMemoryBytes)
 }
 
 func benchIVF(vectors, queryVecs [][]float32) {
-	p := &IndexParams{params: param.NewIVFIndexParams(types.MetricTypeCosine, 16, 20, false)}
+	p := &IndexParams{params: param.NewIVFIndexParams(types.MetricTypeCosine, 128, 20, false)}
 	c, dir := createBenchCollection("ivf", p)
 	defer c.Close()
 	defer os.RemoveAll(dir)
 
 	insertMs := insertBenchData(c, vectors)
-	searchMs, qps, avgLat, cnt := runSearchBench(c, queryVecs)
-	printResult(benchResult{"IVF (nList=16, nIters=20)", insertMs, searchMs, qps, avgLat, cnt})
+	searchMs, qps, avgLat, p50, p95, p99, cnt := runSearchBench(c, queryVecs)
+	printResult(benchResult{"IVF (nList=128, nIters=20)", insertMs, searchMs, qps, avgLat, p50, p95, p99, cnt}, c.Stats().TotalMemoryBytes)
 }
 
 func benchVamana(vectors, queryVecs [][]float32) {
@@ -192,8 +225,8 @@ func benchVamana(vectors, queryVecs [][]float32) {
 	defer os.RemoveAll(dir)
 
 	insertMs := insertBenchData(c, vectors)
-	searchMs, qps, avgLat, cnt := runSearchBench(c, queryVecs)
-	printResult(benchResult{"Vamana (maxDegree=16, alpha=1.2)", insertMs, searchMs, qps, avgLat, cnt})
+	searchMs, qps, avgLat, p50, p95, p99, cnt := runSearchBench(c, queryVecs)
+	printResult(benchResult{"Vamana (maxDegree=16, alpha=1.2)", insertMs, searchMs, qps, avgLat, p50, p95, p99, cnt}, c.Stats().TotalMemoryBytes)
 }
 
 func benchHNSWRabitq(vectors, queryVecs [][]float32) {
@@ -203,8 +236,8 @@ func benchHNSWRabitq(vectors, queryVecs [][]float32) {
 	defer os.RemoveAll(dir)
 
 	insertMs := insertBenchData(c, vectors)
-	searchMs, qps, avgLat, cnt := runSearchBench(c, queryVecs)
-	printResult(benchResult{"HNSW RaBitQ (M=16, totalBits=1)", insertMs, searchMs, qps, avgLat, cnt})
+	searchMs, qps, avgLat, p50, p95, p99, cnt := runSearchBench(c, queryVecs)
+	printResult(benchResult{"HNSW RaBitQ (M=16, totalBits=1)", insertMs, searchMs, qps, avgLat, p50, p95, p99, cnt}, c.Stats().TotalMemoryBytes)
 }
 
 func benchConcurrentSearch(vectors, queryVecs [][]float32) {
@@ -231,7 +264,70 @@ func benchConcurrentSearch(vectors, queryVecs [][]float32) {
 	elapsed := time.Since(start)
 	qps := float64(len(queries)) / elapsed.Seconds()
 	avgLat := float64(elapsed.Milliseconds()) / float64(len(queries))
+
+	stats := c.Stats()
 	fmt.Printf("\n[Concurrent Vamana (BatchQuery, %d goroutines)]\n", len(queries))
 	fmt.Printf("  搜索耗时: %d ms (%d queries)\n", elapsed.Milliseconds(), len(queries))
 	fmt.Printf("  QPS: %.0f | 平均延迟: %.3f ms | 结果数: %d\n", qps, avgLat, len(results[0]))
+	fmt.Printf("  内存占用: %.2f MB\n", float64(stats.TotalMemoryBytes)/1024/1024)
+}
+
+func benchRealConcurrentSearch(vectors, queryVecs [][]float32) {
+	p := &IndexParams{params: param.NewVamanaIndexParams(types.MetricTypeCosine, 16, 30, 1.2, false, false)}
+	c, dir := createBenchCollection("real_concurrent_vamana", p)
+	defer c.Close()
+	defer os.RemoveAll(dir)
+
+	insertBenchData(c, vectors)
+
+	concurrencies := []int{1, 4, 8, 16, 32}
+	queryCount := 1000
+
+	for _, conc := range concurrencies {
+		latencies := make([]float64, queryCount*conc)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		idx := 0
+
+		start := time.Now()
+		for g := 0; g < conc; g++ {
+			wg.Add(1)
+			go func(goroutineID int) {
+				defer wg.Done()
+				for i := 0; i < queryCount; i++ {
+					qi := (goroutineID*queryCount + i) % len(queryVecs)
+					qStart := time.Now()
+					c.Query(&query.SearchQuery{
+						Target: query.QueryTarget{
+							FieldName: "vec",
+							Vector:    &query.VectorClause{QueryVector: queryVecs[qi]},
+						},
+						TopK: topK,
+					})
+					lat := float64(time.Since(qStart).Nanoseconds()) / 1e6
+					mu.Lock()
+					latencies[idx] = lat
+					idx++
+					mu.Unlock()
+				}
+			}(g)
+		}
+		wg.Wait()
+		elapsed := time.Since(start)
+
+		totalQueries := conc * queryCount
+		qps := float64(totalQueries) / elapsed.Seconds()
+
+		sorted := make([]float64, idx)
+		copy(sorted, latencies[:idx])
+		sort.Float64s(sorted)
+		p50 := percentile(sorted, 50)
+		p95 := percentile(sorted, 95)
+		p99 := percentile(sorted, 99)
+		avgLat := float64(elapsed.Milliseconds()) / float64(totalQueries)
+
+		fmt.Printf("\n[Real Concurrent Vamana (%d goroutines × %d queries)]\n", conc, queryCount)
+		fmt.Printf("  总耗时: %d ms | QPS: %.0f | 平均延迟: %.3f ms\n", elapsed.Milliseconds(), qps, avgLat)
+		fmt.Printf("  P50: %.3f ms | P95: %.3f ms | P99: %.3f ms\n", p50, p95, p99)
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/third-apps/go-zvec/types"
 )
 
+// TestL2Squared 验证 L2 平方距离计算正确性
 func TestL2Squared(t *testing.T) {
 	a := []float32{0, 0, 0}
 	b := []float32{3, 4, 0}
@@ -16,6 +17,7 @@ func TestL2Squared(t *testing.T) {
 	}
 }
 
+// TestCosineSimilarity 验证余弦相似度计算正确性（正交向量为0）
 func TestCosineSimilarity(t *testing.T) {
 	a := []float32{1, 0, 0}
 	b := []float32{0, 1, 0}
@@ -25,6 +27,7 @@ func TestCosineSimilarity(t *testing.T) {
 	}
 }
 
+// TestNormalize 验证向量归一化后范数为1
 func TestNormalize(t *testing.T) {
 	v := []float32{3, 4}
 	n := Normalize(v)
@@ -38,6 +41,7 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+// TestGetDistanceFunc 验证根据度量类型获取正确的距离函数
 func TestGetDistanceFunc(t *testing.T) {
 	a := []float32{1, 2, 3}
 	b := []float32{4, 5, 6}
@@ -50,6 +54,7 @@ func TestGetDistanceFunc(t *testing.T) {
 	}
 }
 
+// TestL2 验证 L2 距离（开方）计算正确性
 func TestL2(t *testing.T) {
 	a := []float32{3, 4}
 	b := []float32{0, 0}
@@ -59,6 +64,7 @@ func TestL2(t *testing.T) {
 	}
 }
 
+// TestInnerProduct 验证内积距离计算正确性
 func TestInnerProduct(t *testing.T) {
 	a := []float32{1, 0}
 	b := []float32{0, 1}
@@ -76,6 +82,7 @@ func TestInnerProduct(t *testing.T) {
 	}
 }
 
+// TestCosineDistance 验证余弦距离计算正确性（正交/同向/反向/零向量）
 func TestCosineDistance(t *testing.T) {
 	a := []float32{1, 0, 0}
 	b := []float32{0, 1, 0}
@@ -103,6 +110,7 @@ func TestCosineDistance(t *testing.T) {
 	}
 }
 
+// TestSparseInnerProduct 验证稀疏向量内积距离计算正确性
 func TestSparseInnerProduct(t *testing.T) {
 	ia := []uint32{0, 2, 5}
 	va := []float32{1.0, 2.0, 3.0}
@@ -116,6 +124,7 @@ func TestSparseInnerProduct(t *testing.T) {
 	}
 }
 
+// TestSparseInnerProductNoOverlap 验证无重叠索引的稀疏向量内积距离为1
 func TestSparseInnerProductNoOverlap(t *testing.T) {
 	ia := []uint32{0, 1}
 	va := []float32{1, 2}
@@ -128,6 +137,7 @@ func TestSparseInnerProductNoOverlap(t *testing.T) {
 	}
 }
 
+// TestNormalizeZeroVector 验证零向量归一化后范数为0
 func TestNormalizeZeroVector(t *testing.T) {
 	v := []float32{0, 0, 0}
 	n := Normalize(v)
@@ -140,6 +150,7 @@ func TestNormalizeZeroVector(t *testing.T) {
 	}
 }
 
+// TestGetDistanceFuncUnknown 验证未知度量类型返回非 nil 默认距离函数
 func TestGetDistanceFuncUnknown(t *testing.T) {
 	fn := GetDistanceFunc(types.MetricType(999))
 	if fn == nil {
@@ -153,6 +164,7 @@ func TestGetDistanceFuncUnknown(t *testing.T) {
 	}
 }
 
+// TestCosineSameVector 验证相同向量的余弦距离为0
 func TestCosineSameVector(t *testing.T) {
 	a := []float32{0.5, 0.5, 0.5, 0.5}
 	d := CosineDistance(a, a)
@@ -161,6 +173,7 @@ func TestCosineSameVector(t *testing.T) {
 	}
 }
 
+// TestCosineSimilaritySame 验证相同向量的余弦相似度为1
 func TestCosineSimilaritySame(t *testing.T) {
 	a := []float32{3, 4}
 	sim := CosineSimilarity(a, a)
@@ -169,6 +182,7 @@ func TestCosineSimilaritySame(t *testing.T) {
 	}
 }
 
+// TestCosineSimilarityZero 验证零向量与任意向量的余弦相似度为0
 func TestCosineSimilarityZero(t *testing.T) {
 	a := []float32{1, 0}
 	zero := []float32{0, 0}

@@ -4,6 +4,7 @@ import (
 	"github.com/third-apps/go-zvec/collection"
 	"github.com/third-apps/go-zvec/config"
 	"github.com/third-apps/go-zvec/doc"
+	"github.com/third-apps/go-zvec/index"
 	"github.com/third-apps/go-zvec/index/param"
 	"github.com/third-apps/go-zvec/query"
 	"github.com/third-apps/go-zvec/schema"
@@ -69,6 +70,16 @@ func GetVersion() string {
 	return "0.1.0-pure-go"
 }
 
+// Roadmap:
+// v0.5 - Multi Tenant (Collection-level isolation, resource quotas)
+// v0.8 - HTTP/gRPC API layer, multi-Collection management
+// v1.0 - Distributed sharding, replication, consensus (raft)
+//        This transforms go-zvec from an embedded vector database
+//        into a distributed vector database service (Qdrant/Milvus class).
+//        Requires: cluster management, leader election, cross-node search,
+//        data partitioning, fault tolerance. Only pursue when the embedded
+//        version is mature and production-proven.
+
 func SetDefaultJiebaDictDir(dir string) {
 	config.SetDefaultJiebaDictDir(dir)
 }
@@ -77,7 +88,12 @@ func GetDefaultJiebaDictDir() string {
 	return config.GetDefaultJiebaDictDir()
 }
 
-// Re-exports for convenience
+// Convenience re-exports.
+//
+// These type aliases are provided for ergonomic API usage so callers can
+// reference types via "zvec.Doc" instead of "doc.Doc". Each alias maps
+// directly to its underlying package type; no additional abstraction is
+// introduced. For fine-grained control, import the sub-packages directly.
 type (
 	Doc               = doc.Doc
 	Value             = doc.Value
@@ -91,21 +107,28 @@ type (
 	CollectionOptions = collection.Options
 	OptimizeOptions   = collection.OptimizeOptions
 
-	HNSWIndexParam    = param.IndexParams
-	IVFIndexParam     = param.IndexParams
-	FlatIndexParam    = param.IndexParams
-	FTSIndexParam     = param.IndexParams
-	InvertIndexParam  = param.IndexParams
-	DiskAnnIndexParam = param.IndexParams
-	VamanaIndexParam  = param.IndexParams
+	HNSWParams       = param.HNSWParams
+	IVFParams        = param.IVFParams
+	FlatParams       = param.FlatParams
+	FTSParams        = param.FTSParams
+	InvertParams     = param.InvertParams
+	DiskAnnParams    = param.DiskAnnParams
+	VamanaParams     = param.VamanaParams
+	HNSWRabitqParams = param.HNSWRabitqParams
+	IndexConfig      = param.IndexConfig
 
 	SearchQuery        = query.SearchQuery
+	SearchResult       = types.SearchResult
+	Index              = index.Index
+	BatchBuilder       = index.BatchBuilder
 	MultiQuery         = query.MultiQuery
 	GroupByVectorQuery = query.GroupByVectorQuery
 	GroupResult        = query.GroupResult
 	FTSClause          = query.FTSClause
 	SubQuery           = query.SubQuery
 	RerankParams       = query.RerankParams
+	MetadataFilter     = query.MetadataFilter
+	MetadataCondition  = query.MetadataCondition
 
 	Status = status.Status
 )
@@ -179,6 +202,15 @@ var (
 	NewFieldSchema      = schema.NewFieldSchema
 	NewCollectionSchema = schema.NewCollectionSchema
 
+	NewHNSWParams       = param.NewHNSWParams
+	NewIVFParams        = param.NewIVFParams
+	NewFlatParams       = param.NewFlatParams
+	NewFTSParams        = param.NewFTSParams
+	NewInvertParams     = param.NewInvertParams
+	NewDiskAnnParams    = param.NewDiskAnnParams
+	NewVamanaParams     = param.NewVamanaParams
+	NewHNSWRabitqParams = param.NewHNSWRabitqParams
+
 	NewHNSWIndexParam       = param.NewHNSWIndexParams
 	NewIVFIndexParam        = param.NewIVFIndexParams
 	NewFlatIndexParam       = param.NewFlatIndexParams
@@ -187,4 +219,9 @@ var (
 	NewDiskAnnIndexParam    = param.NewDiskAnnIndexParams
 	NewVamanaIndexParam     = param.NewVamanaIndexParams
 	NewHNSWRabitqIndexParam = param.NewHNSWRabitqIndexParams
+	NewMetadataFilter       = query.NewMetadataFilter
 )
+
+func LoadCollection(path string, opts *collection.Options) (*collection.Collection, error) {
+	return collection.LoadCollection(path, opts)
+}

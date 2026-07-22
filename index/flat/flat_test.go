@@ -1,11 +1,13 @@
 package flat
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/third-apps/go-zvec/types"
 )
 
+// TestFlatIndexBasic 验证 Flat 暴力索引基本添加和搜索功能
 func TestFlatIndexBasic(t *testing.T) {
 	idx := NewFlatIndex(4, types.MetricTypeCosine)
 
@@ -27,6 +29,7 @@ func TestFlatIndexBasic(t *testing.T) {
 	}
 }
 
+// TestFlatIndexEmpty 验证空 Flat 索引搜索返回 nil
 func TestFlatIndexEmpty(t *testing.T) {
 	idx := NewFlatIndex(2, types.MetricTypeL2)
 	results := idx.Search([]float32{1, 2}, 5)
@@ -35,6 +38,7 @@ func TestFlatIndexEmpty(t *testing.T) {
 	}
 }
 
+// TestFlatIndexDelete 验证 Flat 索引删除文档功能
 func TestFlatIndexDelete(t *testing.T) {
 	idx := NewFlatIndex(2, types.MetricTypeCosine)
 	idx.Add([]float32{1, 0}, "doc_1")
@@ -51,6 +55,7 @@ func TestFlatIndexDelete(t *testing.T) {
 	}
 }
 
+// TestFlatIndexSearchWithFilter 验证 Flat 索引带过滤条件搜索功能
 func TestFlatIndexSearchWithFilter(t *testing.T) {
 	idx := NewFlatIndex(2, types.MetricTypeCosine)
 	idx.Add([]float32{1, 0}, "doc_1")
@@ -70,6 +75,7 @@ func TestFlatIndexSearchWithFilter(t *testing.T) {
 	}
 }
 
+// TestFlatIndexGetDocID 验证 Flat 索引根据 PK 获取内部文档 ID
 func TestFlatIndexGetDocID(t *testing.T) {
 	idx := NewFlatIndex(2, types.MetricTypeCosine)
 	idx.Add([]float32{1, 0}, "doc_1")
@@ -80,5 +86,33 @@ func TestFlatIndexGetDocID(t *testing.T) {
 	_, found = idx.GetDocID("nonexistent")
 	if found {
 		t.Fatal("expected not found")
+	}
+}
+
+// TestFlatIndexSaveLoad 验证 Flat 索引序列化保存与反序列化加载
+func TestFlatIndexSaveLoad(t *testing.T) {
+	idx := NewFlatIndex(4, types.MetricTypeCosine)
+	idx.Add([]float32{0.1, 0.2, 0.3, 0.4}, "doc_1")
+	idx.Add([]float32{0.2, 0.3, 0.4, 0.1}, "doc_2")
+	idx.Add([]float32{0.9, 0.8, 0.7, 0.6}, "doc_3")
+	idx.Delete("doc_2")
+
+	var buf bytes.Buffer
+	if err := idx.Save(&buf); err != nil {
+		t.Fatal(err)
+	}
+
+	idx2 := NewFlatIndex(4, types.MetricTypeCosine)
+	if err := idx2.Load(&buf); err != nil {
+		t.Fatal(err)
+	}
+
+	if idx2.Size() != 2 {
+		t.Fatalf("expected size 2, got %d", idx2.Size())
+	}
+
+	results := idx2.Search([]float32{0.4, 0.3, 0.3, 0.1}, 2)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
 	}
 }

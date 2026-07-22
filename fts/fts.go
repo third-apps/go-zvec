@@ -4,12 +4,41 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
 
 type Tokenizer interface {
 	Tokenize(text string) []string
+}
+
+type SearchResult struct {
+	DocID   uint64
+	Score   float64
+	DocText string
+}
+
+type BooleanSearchResult struct {
+	DocID   uint64
+	Score   int
+	DocText string
+}
+
+var builderPool = sync.Pool{
+	New: func() interface{} {
+		return new(strings.Builder)
+	},
+}
+
+func getBuilder() *strings.Builder {
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	return b
+}
+
+func putBuilder(b *strings.Builder) {
+	builderPool.Put(b)
 }
 
 type StandardTokenizer struct{}
@@ -20,7 +49,9 @@ func NewStandardTokenizer() *StandardTokenizer {
 
 func (t *StandardTokenizer) Tokenize(text string) []string {
 	var tokens []string
-	current := strings.Builder{}
+	current := getBuilder()
+	defer putBuilder(current)
+
 	for _, r := range text {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			current.WriteRune(unicode.ToLower(r))
@@ -62,65 +93,100 @@ func (f *LowercaseFilter) Filter(tokens []string) []string {
 }
 
 type Posting struct {
-	DocID    uint64
-	Position int
-	Count    int
+	DocID     uint64
+	Positions []int
+	Count     int
 }
 
 type InvertedIndex struct {
+	mu        sync.RWMutex
 	dict      map[string][]Posting
 	totalDocs int
 	docIDs    map[uint64]struct{}
+	docTokens map[uint64][]string
 }
 
 func NewInvertedIndex() *InvertedIndex {
 	return &InvertedIndex{
-		dict:   make(map[string][]Posting),
-		docIDs: make(map[uint64]struct{}),
+		dict:      make(map[string][]Posting),
+		docIDs:    make(map[uint64]struct{}),
+		docTokens: make(map[uint64][]string),
 	}
 }
 
 func (idx *InvertedIndex) AddDocument(docID uint64, tokens []string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
 	if _, exists := idx.docIDs[docID]; exists {
-		idx.RemoveDocument(docID)
+		idx.removeDocumentLocked(docID)
 	}
 	idx.docIDs[docID] = struct{}{}
 	idx.totalDocs++
+
 	positions := make(map[string][]int)
 	for pos, token := range tokens {
 		positions[token] = append(positions[token], pos)
 	}
 
+	uniqueTokens := make([]string, 0, len(positions))
 	for token, posList := range positions {
+		uniqueTokens = append(uniqueTokens, token)
 		idx.dict[token] = append(idx.dict[token], Posting{
-			DocID:    docID,
-			Position: posList[0],
-			Count:    len(posList),
+			DocID:     docID,
+			Positions: posList,
+			Count:     len(posList),
 		})
 	}
+	idx.docTokens[docID] = uniqueTokens
+
 }
 
 func (idx *InvertedIndex) Search(token string) []Posting {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
 	return idx.dict[strings.ToLower(token)]
 }
 
 func (idx *InvertedIndex) TotalDocs() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
 	return idx.totalDocs
 }
 
 func (idx *InvertedIndex) DocFreq(token string) int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
 	return len(idx.dict[strings.ToLower(token)])
 }
 
+func (idx *InvertedIndex) IDF(token string, totalDocs int) float64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	lower := strings.ToLower(token)
+	docFreq := len(idx.dict[lower])
+	return math.Log((float64(totalDocs) - float64(docFreq) + 0.5) / (float64(docFreq) + 0.5))
+}
+
 func (idx *InvertedIndex) RemoveDocument(docID uint64) {
-	removed := false
-	for token, postings := range idx.dict {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.removeDocumentLocked(docID)
+}
+
+func (idx *InvertedIndex) removeDocumentLocked(docID uint64) {
+	tokens, ok := idx.docTokens[docID]
+	if !ok {
+		return
+	}
+
+	for _, token := range tokens {
+		postings := idx.dict[token]
 		filtered := make([]Posting, 0, len(postings))
 		for _, p := range postings {
 			if p.DocID != docID {
 				filtered = append(filtered, p)
-			} else {
-				removed = true
 			}
 		}
 		if len(filtered) == 0 {
@@ -129,40 +195,54 @@ func (idx *InvertedIndex) RemoveDocument(docID uint64) {
 			idx.dict[token] = filtered
 		}
 	}
-	if removed && idx.totalDocs > 0 {
+
+	delete(idx.docTokens, docID)
+	if idx.totalDocs > 0 {
 		idx.totalDocs--
-		delete(idx.docIDs, docID)
+	}
+	delete(idx.docIDs, docID)
+
+	if idx.totalDocs > 0 && idx.totalDocs < len(idx.docIDs)/2 {
+		idx.compactMaps()
 	}
 }
 
+func (idx *InvertedIndex) compactMaps() {
+	newDocIDs := make(map[uint64]struct{}, idx.totalDocs)
+	newDocTokens := make(map[uint64][]string, idx.totalDocs)
+	for k, v := range idx.docIDs {
+		newDocIDs[k] = v
+	}
+	for k, v := range idx.docTokens {
+		newDocTokens[k] = v
+	}
+	idx.docIDs = newDocIDs
+	idx.docTokens = newDocTokens
+}
+
 type BM25Scorer struct {
-	k1       float64
-	b        float64
+	k1        float64
+	b         float64
 	avgDocLen float64
-	docLens  []int
 }
 
 func NewBM25Scorer() *BM25Scorer {
 	return &BM25Scorer{
-		k1:       1.2,
-		b:        0.75,
-		docLens:  make([]int, 0),
+		k1: 1.2,
+		b:  0.75,
 	}
 }
 
-func (s *BM25Scorer) UpdateStats(docLens []int) {
-	s.docLens = docLens
-	var total int
-	for _, l := range docLens {
-		total += l
-	}
-	if len(docLens) > 0 {
-		s.avgDocLen = float64(total) / float64(len(docLens))
-	}
+func (s *BM25Scorer) SetAvgDocLen(v float64) {
+	s.avgDocLen = v
 }
 
 func (s *BM25Scorer) Score(docID uint64, docLen int, termFreq int, docFreq int, totalDocs int) float64 {
-	idf := math.Log(1.0 + float64(totalDocs-docFreq+1)/(float64(docFreq)+0.5))
+	idf := math.Log((float64(totalDocs) - float64(docFreq) + 0.5) / (float64(docFreq) + 0.5))
+	return s.ScoreWithIDF(docLen, termFreq, idf)
+}
+
+func (s *BM25Scorer) ScoreWithIDF(docLen int, termFreq int, idf float64) float64 {
 	tf := float64(termFreq) * (s.k1 + 1.0)
 	avgLen := s.avgDocLen
 	if avgLen == 0 {
@@ -173,11 +253,14 @@ func (s *BM25Scorer) Score(docID uint64, docLen int, termFreq int, docFreq int, 
 }
 
 type FTSIndex struct {
-	tokenizer Tokenizer
-	inverted  *InvertedIndex
-	scorer    *BM25Scorer
-	docTexts  map[uint64]string
-	docLens   map[uint64]int
+	mu          sync.RWMutex
+	tokenizer   Tokenizer
+	inverted    *InvertedIndex
+	scorer      *BM25Scorer
+	docTexts    map[uint64]string
+	docLens     map[uint64]int
+	totalDocLen int
+	docCount    int
 }
 
 func NewFTSIndex(tokenizer Tokenizer) *FTSIndex {
@@ -191,35 +274,65 @@ func NewFTSIndex(tokenizer Tokenizer) *FTSIndex {
 }
 
 func (idx *FTSIndex) Index(docID uint64, text string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
 	tokens := idx.tokenizer.Tokenize(text)
+
+	if _, exists := idx.docLens[docID]; exists {
+		oldLen := idx.docLens[docID]
+		idx.totalDocLen -= oldLen
+		idx.docCount--
+	}
+
 	idx.inverted.AddDocument(docID, tokens)
 	idx.docTexts[docID] = text
 	idx.docLens[docID] = len(tokens)
-
-	var lens []int
-	for _, l := range idx.docLens {
-		lens = append(lens, l)
+	idx.totalDocLen += len(tokens)
+	idx.docCount++
+	if idx.docCount > 0 {
+		idx.scorer.SetAvgDocLen(float64(idx.totalDocLen) / float64(idx.docCount))
 	}
-	idx.scorer.UpdateStats(lens)
 }
 
 func (idx *FTSIndex) Delete(docID uint64) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	docLen := idx.docLens[docID]
 	idx.inverted.RemoveDocument(docID)
 	delete(idx.docTexts, docID)
 	delete(idx.docLens, docID)
-
-	var lens []int
-	for _, l := range idx.docLens {
-		lens = append(lens, l)
+	idx.totalDocLen -= docLen
+	idx.docCount--
+	if idx.docCount > 0 {
+		idx.scorer.SetAvgDocLen(float64(idx.totalDocLen) / float64(idx.docCount))
+	} else {
+		idx.scorer.SetAvgDocLen(0)
 	}
-	idx.scorer.UpdateStats(lens)
+
+	if idx.docCount > 0 && idx.docCount < len(idx.docTexts)/2 {
+		idx.compactMaps()
+	}
 }
 
-func (idx *FTSIndex) Search(query string, topK int) []struct {
-	DocID  uint64
-	Score  float64
-	DocText string
-} {
+func (idx *FTSIndex) compactMaps() {
+	newTexts := make(map[uint64]string, idx.docCount)
+	newLens := make(map[uint64]int, idx.docCount)
+	for k, v := range idx.docTexts {
+		newTexts[k] = v
+	}
+	for k, v := range idx.docLens {
+		newLens[k] = v
+	}
+	idx.docTexts = newTexts
+	idx.docLens = newLens
+}
+
+func (idx *FTSIndex) Search(query string, topK int) []SearchResult {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	queryTokens := idx.tokenizer.Tokenize(query)
 	if len(queryTokens) == 0 {
 		return nil
@@ -247,16 +360,16 @@ func (idx *FTSIndex) Search(query string, topK int) []struct {
 		docLen := idx.docLens[docID]
 		var totalScore float64
 		for token, tf := range terms {
-			docFreq := idx.inverted.DocFreq(token)
-			totalScore += idx.scorer.Score(docID, docLen, tf, docFreq, totalDocs)
+			idf := idx.inverted.IDF(token, totalDocs)
+			totalScore += idx.scorer.ScoreWithIDF(docLen, tf, idf)
 		}
 		scores[docID] = totalScore
 	}
 
 	type scoredDoc struct {
-		docID  uint64
-		score  float64
-		text   string
+		docID uint64
+		score float64
+		text  string
 	}
 	var results []scoredDoc
 	for docID, score := range scores {
@@ -273,17 +386,9 @@ func (idx *FTSIndex) Search(query string, topK int) []struct {
 		topK = len(results)
 	}
 
-	out := make([]struct {
-		DocID  uint64
-		Score  float64
-		DocText string
-	}, topK)
+	out := make([]SearchResult, topK)
 	for i := 0; i < topK; i++ {
-		out[i] = struct {
-			DocID  uint64
-			Score  float64
-			DocText string
-		}{results[i].docID, results[i].score, results[i].text}
+		out[i] = SearchResult{results[i].docID, results[i].score, results[i].text}
 	}
 	return out
 }
@@ -295,11 +400,10 @@ const (
 	OpOR  QueryOp = 1
 )
 
-func (idx *FTSIndex) SearchBoolean(query string, op QueryOp, topK int) []struct {
-	DocID  uint64
-	Score  int
-	DocText string
-} {
+func (idx *FTSIndex) SearchBoolean(query string, op QueryOp, topK int) []BooleanSearchResult {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	queryTokens := idx.tokenizer.Tokenize(query)
 	if len(queryTokens) == 0 {
 		return nil
@@ -324,7 +428,10 @@ func (idx *FTSIndex) SearchBoolean(query string, op QueryOp, topK int) []struct 
 	}
 
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].count > results[j].count
+		if results[i].count != results[j].count {
+			return results[i].count > results[j].count
+		}
+		return results[i].docID < results[j].docID
 	})
 
 	if topK > len(results) {
@@ -346,17 +453,9 @@ func (idx *FTSIndex) SearchBoolean(query string, op QueryOp, topK int) []struct 
 		}
 	}
 
-	out := make([]struct {
-		DocID  uint64
-		Score  int
-		DocText string
-	}, len(filtered))
+	out := make([]BooleanSearchResult, len(filtered))
 	for i, r := range filtered {
-		out[i] = struct {
-			DocID  uint64
-			Score  int
-			DocText string
-		}{r.docID, r.count, r.text}
+		out[i] = BooleanSearchResult{r.docID, r.count, r.text}
 	}
 	return out
 }
@@ -388,7 +487,8 @@ func ParseFTSQuery(query string) *FTSQueryNode {
 
 func tokenizeFTSQuery(query string) []string {
 	var tokens []string
-	var current strings.Builder
+	current := getBuilder()
+	defer putBuilder(current)
 	inQuotes := false
 
 	for _, r := range query {
@@ -513,11 +613,10 @@ func parsePrimary(tokens []string, pos int) (*FTSQueryNode, int) {
 	return &FTSQueryNode{Op: FTSOpTerm, Term: strings.ToLower(token)}, pos
 }
 
-func (idx *FTSIndex) SearchAdvanced(query string, topK int) []struct {
-	DocID   uint64
-	Score   float64
-	DocText string
-} {
+func (idx *FTSIndex) SearchAdvanced(query string, topK int) []SearchResult {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	node := ParseFTSQuery(query)
 	if node == nil {
 		return nil
@@ -542,15 +641,9 @@ func (idx *FTSIndex) SearchAdvanced(query string, topK int) []struct {
 		topK = len(results)
 	}
 
-	output := make([]struct {
-		DocID   uint64
-		Score   float64
-		DocText string
-	}, topK)
+	output := make([]SearchResult, topK)
 	for i := 0; i < topK; i++ {
-		output[i].DocID = results[i].docID
-		output[i].Score = results[i].score
-		output[i].DocText = results[i].docText
+		output[i] = SearchResult{DocID: results[i].docID, Score: results[i].score, DocText: results[i].docText}
 	}
 	return output
 }
@@ -592,6 +685,16 @@ func (idx *FTSIndex) evaluateNode(node *FTSQueryNode) map[uint64]float64 {
 		}
 		return result
 	case FTSOpNot:
+		if len(node.Children) == 1 {
+			exclude := idx.evaluateNode(node.Children[0])
+			result := make(map[uint64]float64)
+			for docID := range idx.docLens {
+				if _, excluded := exclude[docID]; !excluded {
+					result[docID] = 0
+				}
+			}
+			return result
+		}
 		if len(node.Children) < 2 {
 			return nil
 		}
@@ -612,13 +715,12 @@ func (idx *FTSIndex) evaluateNode(node *FTSQueryNode) map[uint64]float64 {
 func (idx *FTSIndex) evaluateTerm(term string) map[uint64]float64 {
 	postings := idx.inverted.Search(term)
 	totalDocs := idx.inverted.TotalDocs()
-	docFreq := idx.inverted.DocFreq(term)
+	idf := idx.inverted.IDF(term, totalDocs)
 
 	scores := make(map[uint64]float64)
 	for _, p := range postings {
 		docLen := idx.docLens[p.DocID]
-		score := idx.scorer.Score(p.DocID, docLen, p.Count, docFreq, totalDocs)
-		scores[p.DocID] = score
+		scores[p.DocID] = idx.scorer.ScoreWithIDF(docLen, p.Count, idf)
 	}
 	return scores
 }
@@ -632,19 +734,91 @@ func (idx *FTSIndex) evaluatePhrase(phrase string) map[uint64]float64 {
 		return idx.evaluateTerm(tokens[0])
 	}
 
-	docsForFirst := idx.evaluateTerm(tokens[0])
-	for _, token := range tokens[1:] {
-		docsForToken := idx.evaluateTerm(token)
-		intersection := make(map[uint64]float64)
-		for docID, score := range docsForFirst {
-			if s, ok := docsForToken[docID]; ok {
-				intersection[docID] = score + s
-			}
+	postingsPerToken := make([][]Posting, len(tokens))
+	for i, token := range tokens {
+		postingsPerToken[i] = idx.inverted.Search(token)
+		if len(postingsPerToken[i]) == 0 {
+			return nil
 		}
-		docsForFirst = intersection
 	}
 
-	return docsForFirst
+	docSets := make([]map[uint64]bool, len(tokens))
+	for i, postings := range postingsPerToken {
+		docSets[i] = make(map[uint64]bool, len(postings))
+		for _, p := range postings {
+			docSets[i][p.DocID] = true
+		}
+	}
+
+	candidateDocs := make(map[uint64]bool)
+	for docID := range docSets[0] {
+		allContain := true
+		for i := 1; i < len(docSets); i++ {
+			if !docSets[i][docID] {
+				allContain = false
+				break
+			}
+		}
+		if allContain {
+			candidateDocs[docID] = true
+		}
+	}
+
+	postingsByDoc := make([]map[uint64]Posting, len(tokens))
+	for i, postings := range postingsPerToken {
+		postingsByDoc[i] = make(map[uint64]Posting, len(postings))
+		for _, p := range postings {
+			postingsByDoc[i][p.DocID] = p
+		}
+	}
+
+	scores := make(map[uint64]float64)
+	totalDocs := idx.inverted.TotalDocs()
+
+	for docID := range candidateDocs {
+		phraseCount := countPhraseOccurrences(postingsByDoc, docID, len(tokens))
+		if phraseCount > 0 {
+			var totalScore float64
+			for i := 0; i < len(tokens); i++ {
+
+				docLen := idx.docLens[docID]
+				idf := idx.inverted.IDF(tokens[i], totalDocs)
+				totalScore += idx.scorer.ScoreWithIDF(docLen, phraseCount, idf)
+			}
+			scores[docID] = totalScore
+		}
+	}
+
+	return scores
+}
+
+func countPhraseOccurrences(postingsByDoc []map[uint64]Posting, docID uint64, numTokens int) int {
+	firstPosting := postingsByDoc[0][docID]
+	positions := firstPosting.Positions
+
+	count := 0
+	for _, startPos := range positions {
+		match := true
+		for i := 1; i < numTokens; i++ {
+			p := postingsByDoc[i][docID]
+			targetPos := startPos + i
+			found := false
+			for _, pos := range p.Positions {
+				if pos == targetPos {
+					found = true
+					break
+				}
+			}
+			if !found {
+				match = false
+				break
+			}
+		}
+		if match {
+			count++
+		}
+	}
+	return count
 }
 
 type JiebaTokenizer struct {
